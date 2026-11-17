@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Per-user Egnyte access</h1>
+
+<section>
+  <h2>You</h2>
+  <p>Signed in to this site as <strong>{{ user.name }}</strong>.</p>
+  <p class="muted">Entra object id: {{ user.object_id }}</p>
+</section>
+
+<section>
+  <h2>Egnyte ({{ domain }})</h2>
+  {% if record %}
+    <p>Connected as the Egnyte user <strong>{{ record.egnyte_username }}</strong>.</p>
+    <p class="muted">
+      Access token valid until {{ expiry }}.
+      Refresh token: {{ "stored" if record.refresh_token else "not issued" }}.
+      Permissions requested: {{ scope }}.
+    </p>
+    <p>
+      <a class="button" href="{{ url_for('folders') }}">My private folder</a>
+      <a class="button" href="{{ url_for('folders', path='/Shared') }}">/Shared</a>
+    </p>
+    <p>
+      <a href="{{ url_for('egnyte_connect') }}">Connect again</a>
+    </p>
+    <form method="post" action="{{ url_for('egnyte_disconnect') }}">
+      <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+      <button type="submit">Disconnect my Egnyte account</button>
+    </form>
+  {% else %}
+    <p>You have not connected an Egnyte account yet. Everything this site does in Egnyte happens as you,
+       with your own permissions.</p>
+    <p><a class="button" href="{{ url_for('egnyte_connect') }}">Connect to Egnyte</a></p>
+  {% endif %}
+</section>
+{% endblock %}

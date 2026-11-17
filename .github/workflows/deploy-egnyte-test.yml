@@ -1,0 +1,200 @@
+name: Deploy egnyte-test
+
+# Tests the web app, validates the infrastructure, and (on master or by hand) deploys both to Azure:
+#   resource group rg-egnyte-test, web app egnyte-test, North Central US.
+# One-time setup (Azure sign-in without secrets, the GitHub environment, Key Vault secrets): infra/README.md
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'infra/**'
+      - 'web_app/**'
+      - 'egnyte/**'
+      - 'LICENSE.txt'
+      - '.github/workflows/deploy-egnyte-test.yml'
+  pull_request:
+    paths:
+      - 'infra/**'
+      - 'web_app/**'
+      - 'egnyte/**'
+      - '.github/workflows/deploy-egnyte-test.yml'
+  workflow_dispatch:
+
+# Never run two deployments at once, and never cancel one half way through.
+concurrency:
+  group: deploy-egnyte-test-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  RESOURCE_GROUP: rg-egnyte-test
+  APP_NAME: egnyte-test
+  LOCATION: northcentralus
+  PYTHON_VERSION: '3.13'
+
+jobs:
+  test:
+    name: Test the web app
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: web_app/requirements.txt
+      - name: Install dependencies
+        run: python -m pip install -r web_app/requirements.txt
+      - name: Run the tests
+        run: python -m unittest discover -s web_app/tests -v
+
+  validate-infra:
+    name: Validate the infrastructure code
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Compile and lint the Bicep template
+        run: az bicep build --file infra/main.bicep --stdout > /dev/null
+      - name: Test the deployment scripts
+        run: python -m unittest discover -s infra/tests -v
+
+  package:
+    name: Build the deployment package
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Build web_app/dist/egnyte-webapp.zip
+        run: python web_app/package.py --list
+      - uses: actions/upload-artifact@v4
+        with:
+          name: egnyte-webapp
+          path: web_app/dist/egnyte-webapp.zip
+          if-no-files-found: error
+          retention-days: 14
+
+  infrastructure:
+    name: Deploy the infrastructure
+    if: github.event_name != 'pull_request'
+    needs: [test, validate-infra]
+    runs-on: ubuntu-latest
+    environment: egnyte-test
+    permissions:
+      contents: read
+      id-token: write       # lets this job sign in to Azure without a stored secret (OIDC)
+    outputs:
+      key_vault_name: ${{ steps.deploy.outputs.key_vault_name }}
+      host_name: ${{ steps.deploy.outputs.host_name }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Sign in to Azure
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Make sure the resource group exists
+        run: |
+          if az group show --name "$RESOURCE_GROUP" > /dev/null 2>&1; then
+            echo "Resource group $RESOURCE_GROUP exists."
+          else
+            az group create --name "$RESOURCE_GROUP" --location "$LOCATION" --output none
+            echo "Created resource group $RESOURCE_GROUP in $LOCATION."
+          fi
+
+      - name: Find the object id of this pipeline's identity
+        id: me
+        run: bash infra/scripts/principal-object-id.sh
+
+      - name: Deploy infra/main.bicep
+        id: deploy
+        env:
+          EGNYTE_CLIENT_ID: ${{ vars.EGNYTE_CLIENT_ID }}
+          EGNYTE_DOMAIN: ${{ vars.EGNYTE_DOMAIN || 'stout' }}
+          ENTRA_CLIENT_ID: ${{ vars.ENTRA_CLIENT_ID }}
+          DEPLOYER_OBJECT_ID: ${{ steps.me.outputs.object_id }}
+        run: |
+          outputs="$(az deployment group create \
+            --resource-group "$RESOURCE_GROUP" \
+            --name "egnyte-test-$GITHUB_RUN_NUMBER" \
+            --template-file infra/main.bicep \
+            --parameters \
+              appName="$APP_NAME" \
+              location="$LOCATION" \
+              pythonVersion="$PYTHON_VERSION" \
+              egnyteDomain="$EGNYTE_DOMAIN" \
+              egnyteClientId="$EGNYTE_CLIENT_ID" \
+              entraClientId="$ENTRA_CLIENT_ID" \
+              deployerPrincipalId="$DEPLOYER_OBJECT_ID" \
+            --query properties.outputs \
+            --output json)"
+          echo "key_vault_name=$(jq -r .keyVaultName.value <<< "$outputs")" >> "$GITHUB_OUTPUT"
+          echo "host_name=$(jq -r .hostName.value <<< "$outputs")" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Infrastructure deployed"
+            echo "- Site: https://$(jq -r .hostName.value <<< "$outputs")"
+            echo "- Key Vault: $(jq -r .keyVaultName.value <<< "$outputs")"
+            echo "- Egnyte redirect URI to register on the API key: \`$(jq -r .egnyteRedirectUri.value <<< "$outputs")\`"
+            echo "- Entra redirect URI to register on the sign-in app registration: \`$(jq -r .entraRedirectUri.value <<< "$outputs")\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Create the generated secrets (only the ones that don't exist yet)
+        env:
+          KEY_VAULT_NAME: ${{ steps.deploy.outputs.key_vault_name }}
+        run: bash infra/scripts/ensure-generated-secrets.sh
+
+  deploy:
+    name: Deploy the web app
+    needs: [package, infrastructure]
+    runs-on: ubuntu-latest
+    environment:
+      name: egnyte-test
+      url: https://${{ needs.infrastructure.outputs.host_name }}
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: egnyte-webapp
+          path: dist
+
+      - name: Sign in to Azure
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      # The two secrets a person has to provide. Stops here, with instructions, on the first run.
+      - name: Check that the secrets only a person can supply are in Key Vault
+        env:
+          KEY_VAULT_NAME: ${{ needs.infrastructure.outputs.key_vault_name }}
+        run: bash infra/scripts/require-secrets.sh egnyte-client-secret entra-client-secret
+
+      - name: Deploy the package
+        run: |
+          az webapp deploy \
+            --resource-group "$RESOURCE_GROUP" \
+            --name "$APP_NAME" \
+            --src-path dist/egnyte-webapp.zip \
+            --type zip \
+            --clean true
+
+      - name: Smoke test
+        env:
+          SITE: https://${{ needs.infrastructure.outputs.host_name }}
+        run: bash infra/scripts/smoke-test.sh "$SITE"

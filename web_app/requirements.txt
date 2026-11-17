@@ -1,0 +1,6 @@
+flask>=3.0
+gunicorn>=22.0
+requests>=2.32.4
+cryptography>=42.0
+azure-identity>=1.17
+azure-keyvault-secrets>=4.8

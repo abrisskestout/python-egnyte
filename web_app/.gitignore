@@ -1,0 +1,5 @@
+dist/
+.egnyte-tokens/
+.venv/
+__pycache__/
+*.pyc

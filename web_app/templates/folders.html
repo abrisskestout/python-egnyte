@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block title %}{{ path }}{% endblock %}
+{% block content %}
+<h1>{{ path }}</h1>
+<p class="muted">Listed as the Egnyte user <strong>{{ egnyte_user }}</strong>. You only see what your own account can open.</p>
+
+<p>
+  {% if parent %}<a href="{{ url_for('folders', path=parent) }}">&larr; {{ parent }}</a> &middot; {% endif %}
+  <a href="{{ url_for('folders', path='/Shared') }}">/Shared</a> &middot;
+  <a href="{{ url_for('folders', path=private_path) }}">My private folder</a>
+</p>
+
+{% if not subfolders and not files %}
+  <p>This folder is empty (or has nothing you can see).</p>
+{% endif %}
+
+{% if subfolders %}
+<h2>Folders</h2>
+<ul>
+  {% for name, folder_path in subfolders %}
+    <li><a href="{{ url_for('folders', path=folder_path) }}">{{ name }}</a></li>
+  {% endfor %}
+</ul>
+{% endif %}
+
+{% if files %}
+<h2>Files</h2>
+<ul>
+  {% for name, file_path, size in files %}
+    <li><a href="{{ url_for('download', path=file_path) }}">{{ name }}</a>
+      {% if size is not none %}<span class="muted">({{ size }} bytes)</span>{% endif %}</li>
+  {% endfor %}
+</ul>
+{% endif %}
+
+{% if truncated %}<p class="muted">Only the first 500 entries of each kind are shown.</p>{% endif %}
+{% endblock %}

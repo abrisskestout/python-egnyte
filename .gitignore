@@ -19,3 +19,9 @@ _trial_temp
 doc/_*
 venv/
 
+# Egnyte credentials and config must never be committed
+.egnyte/
+egnyte-config*.json
+config.json
+*.token
+

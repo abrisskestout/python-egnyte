@@ -10,3 +10,10 @@ section { margin: 1.5rem 0; }
 button { background: transparent; color: var(--accent); }
 ul { padding-left: 1.2rem; }
 a { color: var(--accent); }
+.notice { padding: .6rem .9rem; border-left: 4px solid var(--muted); background: #8881; border-radius: 3px; }
+.notice-success { border-left-color: #1a7f37; }
+.notice-denied { border-left-color: #c62828; }
+.notice-info { border-left-color: var(--accent); }
+.actions form { margin: .6rem 0; }
+.actions .muted { margin-left: .5rem; }
+.preview { padding: .6rem .9rem; border: 1px solid #8884; border-radius: 3px; white-space: pre-wrap; overflow-x: auto; }

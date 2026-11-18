@@ -23,8 +23,9 @@ class PackageTests(unittest.TestCase):
 
     def test_contains_the_app_the_vendored_library_and_the_license(self):
         for name in ("app.py", "wsgi.py", "settings.py", "identity.py", "egnyte_oauth.py", "token_store.py",
-                     "egnyte_access.py", "requirements.txt", "templates/base.html", "templates/index.html",
-                     "templates/folders.html", "templates/error.html", "static/app.css", ".deployment",
+                     "egnyte_access.py", "permission_check.py", "requirements.txt", "templates/base.html",
+                     "templates/index.html", "templates/folders.html", "templates/error.html",
+                     "templates/permissions.html", "static/app.css", ".deployment",
                      "egnyte/__init__.py", "egnyte/client.py", "egnyte/base.py", "egnyte/resources.py", "LICENSE.txt"):
             self.assertIn(name, self.names)
 

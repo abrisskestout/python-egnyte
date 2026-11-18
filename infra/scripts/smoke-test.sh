@@ -6,7 +6,7 @@
 # 1. GET /healthz must become 200 (it is the one path excluded from sign-in).
 # 2. GET / with no sign-in must NOT be served: 302 (redirect to Microsoft sign-in), 401 or 403. A 200 means
 #    App Service Authentication is not protecting the site, and the app trusts the identity headers that it
-#    adds, so that fails the deployment.
+#    adds, so this check fails.
 set -euo pipefail
 
 base="${1:?usage: smoke-test.sh https://<host>}"
@@ -25,7 +25,7 @@ for i in $(seq 1 "$attempts"); do
   fi
   echo "Attempt $i of $attempts: $base/healthz answered ${code:-nothing}; waiting ${delay}s."
   if [ "$i" = "$attempts" ]; then
-    echo "::error::$base/healthz never answered 200. Look at the app log: az webapp log tail --name <app> --resource-group <group>"
+    echo "ERROR: $base/healthz never answered 200. Look at the app log: az webapp log tail --name <app> --resource-group <group>" >&2
     exit 1
   fi
   sleep "$delay"
@@ -35,7 +35,7 @@ code="$(status "$base/")"
 case "$code" in
   302|401|403) echo "Sign-in is enforced: $base/ answered $code without a session." ;;
   *)
-    echo "::error::$base/ answered ${code:-nothing} without a session. Expected 302, 401 or 403: App Service Authentication is NOT protecting the site."
+    echo "ERROR: $base/ answered ${code:-nothing} without a session. Expected 302, 401 or 403: App Service Authentication is NOT protecting the site." >&2
     exit 1
     ;;
 esac

@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+{% block title %}Permission test{% endblock %}
+{% block content %}
+<h1>Permission test</h1>
+<p class="muted">
+  Everything here runs as the Egnyte account <strong>{{ egnyte_user }}</strong> (you are signed in to this site as
+  <strong>{{ who }}</strong>). Egnyte decides what that account may do, so the same button can give different people
+  different answers. Folder: <code>{{ state.folder }}</code>
+</p>
+
+<section>
+  <h2>What is there now</h2>
+  {% if state.folder_status == "denied" %}
+    <p>Your Egnyte account is not allowed to open this folder. You can still press the buttons to see what Egnyte says.</p>
+  {% elif state.folder_status == "missing" %}
+    <p>This folder does not exist, or your Egnyte account can't see it.</p>
+  {% elif state.folder_status == "not_a_folder" %}
+    <p>This path is a file, not a folder.</p>
+  {% elif not state.file %}
+    <p>The file <strong>Text Test</strong> does not exist in the folder.</p>
+  {% else %}
+    <p>
+      <strong>{{ state.file.name }}</strong>
+      {% if state.file.size is not none %}<span class="muted">({{ state.file.size }} bytes)</span>{% endif %}
+    </p>
+    {% if state.file.modified or state.file.modified_by %}
+      <p class="muted">Last modified {{ state.file.modified or "at an unknown time" }}{% if state.file.modified_by %} by {{ state.file.modified_by }}{% endif %}</p>
+    {% endif %}
+    {% if state.preview is not none %}
+      <pre class="preview">{{ state.preview }}</pre>
+    {% elif state.preview_note %}
+      <p>{{ state.preview_note }}</p>
+    {% endif %}
+  {% endif %}
+</section>
+
+<section>
+  <h2>Try it</h2>
+  <div class="actions">
+    <form method="post" action="{{ url_for('permissions_edit') }}">
+      <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+      <button type="submit">Edit file</button>
+      <span class="muted">adds the line "edited by {{ who }}"</span>
+    </form>
+    <form method="post" action="{{ url_for('permissions_create') }}">
+      <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+      <button type="submit">Create file</button>
+      <span class="muted">only if it doesn't exist</span>
+    </form>
+    <form method="post" action="{{ url_for('permissions_delete') }}">
+      <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+      <button type="submit">Delete file</button>
+      <span class="muted">removes it from Egnyte</span>
+    </form>
+  </div>
+  <p class="muted">Each edit becomes a new version in Egnyte, so you can see who did what in its version history.</p>
+</section>
+{% endblock %}

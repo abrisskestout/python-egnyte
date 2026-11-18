@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # Create the two Key Vault secrets nobody should ever have to type: the session-signing key and the
-# token-encryption key. Used by the deploy workflow after the infrastructure exists.
+# token-encryption key. Run it once after deploying infra/main.bicep (needs `az login`, and the
+# "Key Vault Secrets Officer" role on the vault for your account).
 #
 #   KEY_VAULT_NAME=<vault> bash infra/scripts/ensure-generated-secrets.sh
 #
 # An existing secret is NEVER replaced: a new token-encryption key would make every stored Egnyte token
-# unreadable, so every user would have to connect again.
+# unreadable, so every user would have to connect again. A value is never printed or put on a command line.
 #
 # Role assignments can take a few minutes to take effect, so reading or writing is retried
 # (MAX_ATTEMPTS times, RETRY_DELAY seconds apart).
@@ -38,7 +39,6 @@ ensure_secret() {
     fi
     if grep -q "SecretNotFound" "$WORK/error"; then
       "$generator" | tr -d '\r\n' > "$WORK/value"   # no line ending of any kind may end up in the secret
-      echo "::add-mask::$(cat "$WORK/value")"
       # --file keeps the value off the command line.
       if az keyvault secret set --vault-name "$KEY_VAULT_NAME" --name "$name" --file "$WORK/value" --output none 2>"$WORK/error"; then
         rm -f "$WORK/value"
@@ -49,7 +49,7 @@ ensure_secret() {
     echo "Attempt $attempt of $MAX_ATTEMPTS for '$name' did not work yet (new role assignments can take a few minutes); waiting ${RETRY_DELAY}s."
     sleep "$RETRY_DELAY"
   done
-  echo "::error::Could not read or create the Key Vault secret '$name'. Last error: $(head -c 300 "$WORK/error")"
+  echo "ERROR: Could not read or create the Key Vault secret '$name'. Last error: $(head -c 300 "$WORK/error")" >&2
   return 1
 }
 

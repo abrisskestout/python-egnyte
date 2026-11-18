@@ -13,10 +13,11 @@ import time
 from functools import wraps
 
 import requests
-from flask import Flask, abort, g, redirect, render_template, request, send_file, session, url_for
+from flask import Flask, abort, flash, g, redirect, render_template, request, send_file, session, url_for
 
 import egnyte_oauth
 import identity
+import permission_check
 from egnyte_access import EgnyteAccess, NotConnected, RateLimiter  # sets up the egnyte import path
 from egnyte import exc  # noqa: E402  (must come after egnyte_access)
 from token_store import FileTokenStore, PendingStates
@@ -232,6 +233,61 @@ def create_app(settings, *, store=None, access=None, oauth=egnyte_oauth, pending
         # Always an attachment, never rendered by the browser: file contents are not ours to trust.
         return send_file(io.BytesIO(data), mimetype="application/octet-stream", as_attachment=True,
                          download_name=path.rsplit("/", 1)[-1])
+
+    # ------------------------------------------------------------------ permission test
+
+    def permission_action(verb, action, done):
+        """Run one of the three actions as the signed-in user and report what happened on the page.
+
+        Egnyte, not this site, decides whether the user may do it: a refusal is shown, not hidden."""
+        check_csrf()
+        record = access.status(g.user)
+        egnyte_user = record.egnyte_username if record else "unknown"
+        try:
+            name = access.run(g.user, action)
+        except permission_check.ActionRefused as e:
+            flash(str(e), "info")
+        except exc.InsufficientPermissions:
+            flash(f"Egnyte refused: the Egnyte account {egnyte_user} is not allowed to {verb} in "
+                  f"{permission_check.FOLDER}.", "denied")
+        except exc.NotFound:
+            flash(f"Egnyte could not find {permission_check.FOLDER}, or the account {egnyte_user} can't see it.",
+                  "denied")
+        else:
+            flash(done(name, egnyte_user), "success")
+        return redirect(url_for("permissions"))
+
+    @app.get("/permissions")
+    @require_user
+    def permissions():
+        record = access.status(g.user)
+        if record is None:
+            raise NotConnected("You have not connected an Egnyte account yet.")
+        state = access.run(g.user, permission_check.inspect)
+        return render_template("permissions.html", state=state, who=g.user.name, egnyte_user=record.egnyte_username)
+
+    @app.post("/permissions/edit")
+    @require_user
+    def permissions_edit():
+        who = g.user.name
+        return permission_action(
+            "edit files", lambda client: permission_check.edit(client, who),
+            lambda name, egnyte_user: f'Added the line "edited by {who}" to {name}, as the Egnyte account {egnyte_user}.')
+
+    @app.post("/permissions/create")
+    @require_user
+    def permissions_create():
+        who = g.user.name
+        return permission_action(
+            "create files", lambda client: permission_check.create(client, who),
+            lambda name, egnyte_user: f"Created {name}, as the Egnyte account {egnyte_user}.")
+
+    @app.post("/permissions/delete")
+    @require_user
+    def permissions_delete():
+        return permission_action(
+            "delete files", permission_check.delete,
+            lambda name, egnyte_user: f"Deleted {name}, as the Egnyte account {egnyte_user}.")
 
     if settings.allow_dev_user:
         @app.get("/dev/as/<name>")

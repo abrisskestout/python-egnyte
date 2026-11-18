@@ -6,14 +6,10 @@ import urllib.parse
 
 import requests
 
-from helpers import ALICE, BOB, SECRET, as_user, build_stack, connect_user, entry, principal, start_signin
+from helpers import ALICE, BOB, SECRET, as_user, build_stack, connect_user, csrf_from, entry, principal, start_signin
 from egnyte import exc
 from token_store import TokenRecord
 import identity
-
-
-def csrf_from(page):
-    return re.search(r'name="csrf" value="([^"]+)"', page.get_data(as_text=True)).group(1)
 
 
 class Base(unittest.TestCase):

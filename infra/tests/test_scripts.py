@@ -1,11 +1,10 @@
-"""Tests for the pipeline's shell scripts, with a fake `az` and a fake `curl` (no network, no Azure).
+"""Tests for the deployment shell scripts, with a fake `az` and a fake `curl` (no network, no Azure).
 
     python -m unittest discover -s infra/tests -v
 
 They need bash. On Windows that is Git Bash; the tests are skipped if it can't be found.
 """
 import base64
-import json
 import os
 import shutil
 import stat
@@ -37,7 +36,6 @@ while [ $# -gt 0 ]; do
   shift
 done
 case "$group" in
-  "account get-access-token") cat "$state/token"; exit 0;;
   "keyvault secret")
     case "$sub" in
       show)
@@ -70,12 +68,6 @@ esac
 
 def posix(path):
     return path.replace("\\", "/")
-
-
-def jwt(claims):
-    def part(obj):
-        return base64.urlsafe_b64encode(json.dumps(obj).encode()).decode().rstrip("=")
-    return f"{part({'alg': 'none'})}.{part(claims)}.signature"
 
 
 @unittest.skipUnless(BASH, "bash is not available")
@@ -165,16 +157,15 @@ class EnsureGeneratedSecretsTests(ScriptCase):
         self.assertEqual(self.run_ensure().returncode, 0)
         self.assertEqual((self.secret("flask-secret-key"), self.secret("token-encryption-keys")), first)
 
-    def test_values_stay_off_the_command_line_and_out_of_the_logs(self):
+    def test_values_never_reach_the_command_line_or_the_terminal(self):
         result = self.run_ensure()
-        shown = "\n".join(line for line in (result.stdout + result.stderr).splitlines() if not line.startswith("::add-mask::"))
-        masked = [line for line in result.stdout.splitlines() if line.startswith("::add-mask::")]
-        self.assertEqual(len(masked), 2)                                     # the runner is told to hide both values
+        shown = result.stdout + result.stderr
+        self.assertNotIn("::add-mask::", shown)      # a mask command would print the secret on a terminal
         for name in ("flask-secret-key", "token-encryption-keys"):
             value = self.secret(name)
+            self.assertTrue(value)
             self.assertNotIn(value, self.argv_log())
             self.assertNotIn(value, shown)
-            self.assertIn(f"::add-mask::{value}", masked)
 
     def test_waits_for_permissions_to_take_effect(self):
         self.write_state("forbidden_remaining", "3")
@@ -187,7 +178,7 @@ class EnsureGeneratedSecretsTests(ScriptCase):
         self.write_state("always_forbidden", "1")
         result = self.run_ensure(MAX_ATTEMPTS=3)
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("::error::Could not read or create the Key Vault secret 'flask-secret-key'", result.stdout)
+        self.assertIn("ERROR: Could not read or create the Key Vault secret 'flask-secret-key'", result.stderr)
         self.assertEqual(self.argv_log().count("secret show"), 3)
 
     def test_needs_a_vault_name(self):
@@ -211,9 +202,10 @@ class RequireSecretsTests(ScriptCase):
         self.put_secret("entra-client-secret", "TOPSECRET2")
         result = self.run_script("require-secrets.sh", "egnyte-client-secret", "entra-client-secret", KEY_VAULT_NAME="kv-test")
         self.assertEqual(result.returncode, 1)
-        self.assertIn("missing (or the pipeline cannot read): egnyte-client-secret", result.stdout)
-        self.assertIn("Re-run failed jobs", result.stdout)
-        self.assertIn("kv-test", result.stdout)
+        self.assertIn("missing, or your account cannot read: egnyte-client-secret", result.stderr)
+        self.assertNotIn("entra-client-secret", result.stderr.split("cannot read:")[1].splitlines()[0])   # only the missing one
+        self.assertIn("run this check again", result.stderr)
+        self.assertIn("kv-test", result.stderr)
         self.assertNotIn("TOPSECRET", result.stdout + result.stderr)
 
     def test_never_reads_a_value(self):
@@ -224,33 +216,6 @@ class RequireSecretsTests(ScriptCase):
 
     def test_needs_at_least_one_name(self):
         self.assertEqual(self.run_script("require-secrets.sh", KEY_VAULT_NAME="kv-test").returncode, 2)
-
-
-class PrincipalObjectIdTests(ScriptCase):
-    OID = "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0"
-
-    def test_reads_the_object_id_from_the_token_and_hides_the_token(self):
-        token = jwt({"oid": self.OID, "appid": "x", "aud": "https://management.azure.com/"})
-        self.write_state("token", token + "\n")
-        output = os.path.join(self.tmp, "github_output")
-        result = self.run_script("principal-object-id.sh", GITHUB_OUTPUT=posix(output))
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        with open(output) as fp:
-            self.assertEqual(fp.read().strip(), f"object_id={self.OID}")
-        self.assertIn(f"::add-mask::{token}", result.stdout)
-        shown = "\n".join(line for line in result.stdout.splitlines() if not line.startswith("::add-mask::"))
-        self.assertNotIn(token, shown)
-
-    def test_a_token_without_an_object_id_fails(self):
-        self.write_state("token", jwt({"appid": "x"}) + "\n")
-        result = self.run_script("principal-object-id.sh", GITHUB_OUTPUT=posix(os.path.join(self.tmp, "out")))
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("Could not read an object id", result.stdout)
-
-    def test_a_token_that_is_not_a_jwt_fails(self):
-        self.write_state("token", "not-a-token\n")
-        result = self.run_script("principal-object-id.sh", GITHUB_OUTPUT=posix(os.path.join(self.tmp, "out")))
-        self.assertNotEqual(result.returncode, 0)
 
 
 class SmokeTestTests(ScriptCase):
@@ -275,13 +240,13 @@ class SmokeTestTests(ScriptCase):
     def test_fails_when_the_site_never_comes_up(self):
         result = self.smoke("503")
         self.assertEqual(result.returncode, 1)
-        self.assertIn("never answered 200", result.stdout)
+        self.assertIn("never answered 200", result.stderr)
         self.assertEqual(self.read_calls(), 5)
 
     def test_fails_when_the_site_is_not_protected(self):
         result = self.smoke("200", root="200")
         self.assertEqual(result.returncode, 1)
-        self.assertIn("NOT protecting the site", result.stdout)
+        self.assertIn("NOT protecting the site", result.stderr)
 
     def test_fails_on_a_server_error_at_the_root(self):
         self.assertEqual(self.smoke("200", root="500").returncode, 1)

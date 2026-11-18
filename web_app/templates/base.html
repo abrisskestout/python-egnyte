@@ -9,6 +9,11 @@
 <body>
   <header><a href="{{ url_for('index') }}">Egnyte per-user test</a></header>
   <main>
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% for category, message in messages %}
+        <p class="notice notice-{{ category }}" role="status">{{ message }}</p>
+      {% endfor %}
+    {% endwith %}
     {% block content %}{% endblock %}
   </main>
 </body>

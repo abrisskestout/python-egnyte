@@ -19,6 +19,7 @@ at the same folder can see different things.
 | `/egnyte/connect` → `/egnyte/callback` | The OAuth sign-in. The one-time `state` is tied to your session and works once. |
 | `/folders?path=/Shared` | Lists folders and files **as you**. Defaults to `/Private/<your Egnyte username>`. |
 | `/file?path=...` | Downloads a file (up to 25 MB) as an attachment. |
+| `/permissions` | **Permission test.** Three buttons on one fixed file, `Text Test` in `/Shared/IT/Test Web App`: *Edit file* adds the line `edited by <you>`, *Create file* creates it if it doesn't exist, *Delete file* removes it. Each runs as the signed-in user's own Egnyte account, so Egnyte allows or refuses it per person and the page shows the answer. |
 | `/healthz` | Plain `ok`, no sign-in. |
 
 ## 1. Build the package
@@ -44,9 +45,9 @@ per key; if not, this key can serve only one deployment.
 
 ## 3. Create the Azure resources
 
-**Automated alternative:** [infra/](../infra/README.md) holds a Bicep template and a GitHub Actions workflow that do
-steps 3 to 7 for resource group `rg-egnyte-test` and app `egnyte-test` (North Central US), including Microsoft sign-in.
-The manual commands below do the same thing by hand.
+**Alternative:** [infra/](../infra/README.md) holds a Bicep template that does steps 3 to 6 for resource group
+`rg-egnyte-test` and app `egnyte-test` (North Central US), including Microsoft sign-in, with the commands to deploy it
+and the app from your machine. The manual commands below do the same thing by hand.
 
 PowerShell with the Azure CLI. Pick globally unique names for `$APP` and `$KV`, and check which Python
 versions App Service offers with `az webapp list-runtimes --os linux`.
@@ -147,6 +148,26 @@ az webapp deploy -g $RG -n $APP --src-path web_app/dist/egnyte-webapp.zip --type
 az webapp log config -g $RG -n $APP --application-logging filesystem --level information
 az webapp log tail -g $RG -n $APP
 ```
+
+## The permission test
+
+Open **Permission test** on the home page (or `/permissions`). It works on the folder and file named at the top of
+[permission_check.py](permission_check.py); change `FOLDER`, `FILE_BASENAME` or `CREATE_AS` there to point elsewhere.
+
+- **What it shows:** whether the folder and file exist *for you*, the file's current contents, who last modified it,
+  and the Egnyte account everything runs as.
+- **Edit file** reads the file, adds a final line `edited by <the name you signed in to this site with>`, and uploads it
+  again, so each edit is a new version in Egnyte's version history. Existing content is kept byte for byte.
+- **Create file** creates `Text Test.txt` (containing `created by <you>`) only if no `Text Test` or `Text Test.txt`
+  exists. It doesn't create the folder.
+- **Delete file** deletes it.
+- The file is found as `Text Test` or `Text Test.txt`, in any capitals, so it works whichever name it already has.
+- **A refusal is shown, not hidden:** a person whose Egnyte account may not edit, create or delete in that folder sees
+  `Egnyte refused: the Egnyte account <name> is not allowed to <action> files in <folder>`; someone who can't open the
+  folder sees that explained on the page.
+- It needs no new Egnyte permission: `Egnyte.filesystem`, which everyone already granted when connecting, covers
+  reading, writing and deleting files.
+- It is a read-then-write, so two people pressing *Edit* at the same instant can lose one line. Fine for a test.
 
 ## 8. Test with more than one user
 

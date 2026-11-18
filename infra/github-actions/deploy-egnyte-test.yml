@@ -1,8 +1,12 @@
 name: Deploy egnyte-test
 
+# PARKED: this file is not in .github/workflows, so GitHub does not run it. The deployment is done from a local
+# machine for now (infra/README.md). To use it again, follow infra/github-actions/README.md: it needs the
+# deployerPrincipalId parameter and role assignment put back into infra/main.bicep, and this file moved to
+# .github/workflows/.
+#
 # Tests the web app, validates the infrastructure, and (on master or by hand) deploys both to Azure:
 #   resource group rg-egnyte-test, web app egnyte-test, North Central US.
-# One-time setup (Azure sign-in without secrets, the GitHub environment, Key Vault secrets): infra/README.md
 
 on:
   push:
@@ -115,7 +119,7 @@ jobs:
 
       - name: Find the object id of this pipeline's identity
         id: me
-        run: bash infra/scripts/principal-object-id.sh
+        run: bash infra/github-actions/principal-object-id.sh
 
       - name: Deploy infra/main.bicep
         id: deploy

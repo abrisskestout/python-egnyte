@@ -20,7 +20,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
 
 APP_FILES = ("app.py", "wsgi.py", "settings.py", "identity.py", "egnyte_oauth.py", "token_store.py",
-             "egnyte_access.py", "requirements.txt")
+             "egnyte_access.py", "permission_check.py", "requirements.txt")
 APP_DIRS = ("templates", "static")
 LIBRARY_DIR = "egnyte"
 LIBRARY_SKIP_DIRS = {"tests", "__pycache__"}

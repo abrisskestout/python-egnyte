@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Stop early, with instructions, if secrets that a PERSON has to provide are not in Key Vault yet.
+# Check, with instructions if not, that the secrets you have to provide are in Key Vault.
 #
 #   KEY_VAULT_NAME=<vault> bash infra/scripts/require-secrets.sh egnyte-client-secret entra-client-secret
 #
@@ -17,10 +17,10 @@ for name in "$@"; do
 done
 
 if [ "${#missing[@]}" -gt 0 ]; then
-  echo "::error::Key Vault '$KEY_VAULT_NAME' is missing (or the pipeline cannot read): ${missing[*]}"
-  cat <<EOF
+  echo "ERROR: Key Vault '$KEY_VAULT_NAME' is missing, or your account cannot read: ${missing[*]}" >&2
+  cat >&2 <<EOF
 
-Add each one once, then use "Re-run failed jobs" on this workflow run. In the portal:
+Add each one once, then run this check again. In the portal:
   Key Vault '$KEY_VAULT_NAME' > Secrets > Generate/Import, with exactly the names above.
 Or with the Azure CLI, from a file that holds only the secret:
   az keyvault secret set --vault-name $KEY_VAULT_NAME --name <name> --file <file> --output none

@@ -1,7 +1,7 @@
 // Infrastructure for the Egnyte per-user test site (web_app/).
 //
 // Deploys into an existing resource group:
-//   resource group  rg-egnyte-test   (create it first, or let the workflow do it)
+//   resource group  rg-egnyte-test   (create it first: az group create --name rg-egnyte-test --location northcentralus)
 //   app             egnyte-test      -> https://egnyte-test.azurewebsites.net
 //   location        North Central US
 //
@@ -10,9 +10,12 @@
 // are Key Vault references, so no secret value ever appears in this template, its parameters or the logs),
 // and Microsoft Entra sign-in (App Service Authentication, "Require authentication").
 //
-// Secret VALUES are not created here:
+// Secret VALUES are not created here. Put these four in the vault after deploying (see infra/README.md):
 //   flask-secret-key, token-encryption-keys   generated once by infra/scripts/ensure-generated-secrets.sh
-//   egnyte-client-secret, entra-client-secret  put in by a person (see infra/README.md)
+//   egnyte-client-secret, entra-client-secret  yours to supply
+// The identity that deploys needs a role that can create role assignments (Owner, or User Access Administrator /
+// Role Based Access Control Administrator) on the resource group, because this template grants the web app access
+// to the vault.
 
 targetScope = 'resourceGroup'
 
@@ -34,16 +37,13 @@ param pythonVersion string = '3.13'
 param egnyteDomain string = 'stout'
 
 @description('The Egnyte API key (client ID). It is not secret, so it is an ordinary app setting.')
-param egnyteClientId string
+param egnyteClientId string = 'K0eHAXplxpocUex3XX84mddMnMh5PsnHDXbHhPGMVt0U65FQ'
 
 @description('Egnyte permissions the app asks each user for.')
 param egnyteScope string = 'Egnyte.filesystem'
 
 @description('Client ID of the Microsoft Entra app registration used for sign-in to the site (not the Egnyte key).')
-param entraClientId string
-
-@description('Object ID of the identity that deploys this template (the GitHub Actions service principal). It gets the Key Vault Secrets Officer role so the pipeline can create the generated secrets.')
-param deployerPrincipalId string
+param entraClientId string = 'dc1b375f-e9eb-42e3-b126-7a2de72e73be'
 
 @description('Resource tags.')
 param tags object = {
@@ -55,9 +55,12 @@ var planName = 'plan-${appName}'
 var vaultName = toLower('kv-${take(appName, 12)}-${take(uniqueString(resourceGroup().id), 6)}')
 var secretUriBase = '${vault.properties.vaultUri}secrets/'
 
-// Built-in role definitions
+// Networks allowed to reach the web app: [{ priority, name, ipAddress }], kept in one file so that other resources
+// can reuse the same list (see infra/README.md, Network access).
+var allowedIps = loadJsonContent('allowed-ips.json')
+
+// Built-in role definition: Key Vault Secrets User
 var keyVaultSecretsUser = '4633458b-17de-408a-b874-0445c86b69e6'
-var keyVaultSecretsOfficer = 'b86a8fe4-44ce-4948-aee5-eccb2c155cd7'
 
 resource plan 'Microsoft.Web/serverfarms@2023-12-01' = {
   name: planName
@@ -111,6 +114,18 @@ resource webApp 'Microsoft.Web/sites@2023-12-01' = {
       minTlsVersion: '1.2'
       ftpsState: 'Disabled'
       healthCheckPath: '/healthz'
+      // Access restrictions: only the listed networks may reach the site, and everything else is refused (403).
+      // This covers browsers, so people have to be on the VPN to use the site.
+      ipSecurityRestrictions: [for rule in allowedIps: {
+        name: rule.name
+        priority: rule.priority
+        action: 'Allow'
+        ipAddress: rule.ipAddress
+        description: 'Allowed network (infra/allowed-ips.json)'
+      }]
+      ipSecurityRestrictionsDefaultAction: 'Deny'
+      // The deployment (Kudu/SCM) site follows the same list, so zip deployments must also come from these networks.
+      scmIpSecurityRestrictionsUseMain: true
     }
   }
 }
@@ -122,17 +137,6 @@ resource appCanReadSecrets 'Microsoft.Authorization/roleAssignments@2022-04-01' 
   properties: {
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', keyVaultSecretsUser)
     principalId: webApp.identity.principalId
-    principalType: 'ServicePrincipal'
-  }
-}
-
-// The deploying pipeline may create secrets (it creates the two generated ones).
-resource deployerCanWriteSecrets 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  scope: vault
-  name: guid(vault.id, deployerPrincipalId, keyVaultSecretsOfficer)
-  properties: {
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', keyVaultSecretsOfficer)
-    principalId: deployerPrincipalId
     principalType: 'ServicePrincipal'
   }
 }
@@ -194,7 +198,7 @@ resource authSettings 'Microsoft.Web/sites/config@2023-12-01' = {
       unauthenticatedClientAction: 'RedirectToLoginPage'
       redirectToProvider: 'azureactivedirectory'
       excludedPaths: [
-        '/healthz' // the health check and the pipeline's smoke test; it returns the text "ok" and nothing else
+        '/healthz' // the health check; it returns the text "ok" and nothing else
       ]
     }
     identityProviders: {

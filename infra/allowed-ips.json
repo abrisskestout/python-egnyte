@@ -1,0 +1,247 @@
+[
+  {
+    "priority": 500,
+    "name": "Palo FW CSP NAT",
+    "ipAddress": "65.52.58.84/32"
+  },
+  {
+    "priority": 505,
+    "name": "PrismaVPN_Greece",
+    "ipAddress": "130.41.145.153/32"
+  },
+  {
+    "priority": 510,
+    "name": "PrismaVPN_IndiaWest",
+    "ipAddress": "134.238.240.127/32"
+  },
+  {
+    "priority": 520,
+    "name": "PrismaVPN_Switzerland",
+    "ipAddress": "208.127.126.194/32"
+  },
+  {
+    "priority": 530,
+    "name": "PrismaVPN_USCentral",
+    "ipAddress": "208.127.191.215/32"
+  },
+  {
+    "priority": 540,
+    "name": "PrismaVPN_USEast",
+    "ipAddress": "137.83.217.15/32"
+  },
+  {
+    "priority": 550,
+    "name": "PrismaVPN_USEast2",
+    "ipAddress": "137.83.217.124/32"
+  },
+  {
+    "priority": 560,
+    "name": "PrismaVPN_USNorthEast",
+    "ipAddress": "165.1.204.105/32"
+  },
+  {
+    "priority": 570,
+    "name": "PrismaVPN_USNorthEast2",
+    "ipAddress": "208.127.229.77/32"
+  },
+  {
+    "priority": 580,
+    "name": "PrismaVPN_USNorthWest",
+    "ipAddress": "134.238.235.130/32"
+  },
+  {
+    "priority": 590,
+    "name": "PrismaVPN_USSouth",
+    "ipAddress": "208.127.154.97/32"
+  },
+  {
+    "priority": 600,
+    "name": "PrismaVPN_USSouthEast",
+    "ipAddress": "208.127.116.169/32"
+  },
+  {
+    "priority": 610,
+    "name": "PrismaVPN_USSouthWest",
+    "ipAddress": "137.83.223.120/32"
+  },
+  {
+    "priority": 620,
+    "name": "PrismaVPN_USSouthWest2",
+    "ipAddress": "137.83.223.11/32"
+  },
+  {
+    "priority": 630,
+    "name": "PrismaVPN_USWest",
+    "ipAddress": "137.83.246.11/32"
+  },
+  {
+    "priority": 640,
+    "name": "PrismaVPN_USWest2",
+    "ipAddress": "137.83.246.132/32"
+  },
+  {
+    "priority": 650,
+    "name": "PrismaVPN_USSouth2",
+    "ipAddress": "208.127.154.98/32"
+  },
+  {
+    "priority": 660,
+    "name": "PrismaVPN_USCentral2",
+    "ipAddress": "137.83.245.125/32"
+  },
+  {
+    "priority": 670,
+    "name": "PrismaVPN_Greece2",
+    "ipAddress": "130.41.145.154/32"
+  },
+  {
+    "priority": 680,
+    "name": "PrismaVPN_IndiaWest2",
+    "ipAddress": "134.238.240.225/32"
+  },
+  {
+    "priority": 690,
+    "name": "PrismaVPN_USNorthWest2",
+    "ipAddress": "134.238.235.41/32"
+  },
+  {
+    "priority": 700,
+    "name": "PrismaVPN_USSouthEast2",
+    "ipAddress": "208.127.116.28/32"
+  },
+  {
+    "priority": 710,
+    "name": "PrismaVPN_USNorthEast3",
+    "ipAddress": "128.77.43.87/32"
+  },
+  {
+    "priority": 720,
+    "name": "PrismaVPN_USEast3",
+    "ipAddress": "128.77.104.239/32"
+  },
+  {
+    "priority": 730,
+    "name": "PrismaVPN_USCentralWest",
+    "ipAddress": "165.85.242.202/32"
+  },
+  {
+    "priority": 1100,
+    "name": "PrismaVPN_USSouthWest3",
+    "ipAddress": "74.221.128.237/32"
+  },
+  {
+    "priority": 1110,
+    "name": "PrismaVPN_USWest3",
+    "ipAddress": "130.41.50.30/32"
+  },
+  {
+    "priority": 1120,
+    "name": "PrismaVPN_USNorthEast4",
+    "ipAddress": "130.41.49.184/32"
+  },
+  {
+    "priority": 1130,
+    "name": "PrismaVPN_USEast4",
+    "ipAddress": "137.83.218.114/32"
+  },
+  {
+    "priority": 1140,
+    "name": "PrismaVPN_USWest4",
+    "ipAddress": "130.41.50.194/32"
+  },
+  {
+    "priority": 1150,
+    "name": "PrismaVPN_USSouthWest4",
+    "ipAddress": "130.41.53.18/32"
+  },
+  {
+    "priority": 1160,
+    "name": "PrismaVPN_Switzerland2",
+    "ipAddress": "208.127.126.7/32"
+  },
+  {
+    "priority": 1170,
+    "name": "PrismaVPN_USEast5",
+    "ipAddress": "128.77.104.240/32"
+  },
+  {
+    "priority": 1180,
+    "name": "PrismaVPN_USEast6",
+    "ipAddress": "165.85.43.107/32"
+  },
+  {
+    "priority": 1190,
+    "name": "PrismaVPN_USEast7",
+    "ipAddress": "208.127.225.135/32"
+  },
+  {
+    "priority": 1200,
+    "name": "PrismaVPN_USEast8",
+    "ipAddress": "208.127.88.132/32"
+  },
+  {
+    "priority": 1210,
+    "name": "PrismaVPN_USNorthEast5",
+    "ipAddress": "128.77.43.88/32"
+  },
+  {
+    "priority": 1220,
+    "name": "PrismaVPN_USNorthEast6",
+    "ipAddress": "130.41.48.38/32"
+  },
+  {
+    "priority": 1230,
+    "name": "PrismaVPN_USNorthEast7",
+    "ipAddress": "137.83.220.108/32"
+  },
+  {
+    "priority": 1240,
+    "name": "PrismaVPN_USNorthEast8",
+    "ipAddress": "137.83.220.109/32"
+  },
+  {
+    "priority": 1250,
+    "name": "PrismaVPN_USCentralWest2",
+    "ipAddress": "165.85.54.192/32"
+  },
+  {
+    "priority": 1260,
+    "name": "PrismaVPN_USSouth3",
+    "ipAddress": "144.125.124.123/32"
+  },
+  {
+    "priority": 1270,
+    "name": "PrismaVPN_USSouth4",
+    "ipAddress": "144.125.124.124/32"
+  },
+  {
+    "priority": 1280,
+    "name": "PrismaVPN_USEast9",
+    "ipAddress": "34.100.66.102/32"
+  },
+  {
+    "priority": 1290,
+    "name": "PrismaVPN_USNorthEast9",
+    "ipAddress": "34.100.68.19/32"
+  },
+  {
+    "priority": 1300,
+    "name": "PrismaVPN_USCentral3",
+    "ipAddress": "134.238.167.79/32"
+  },
+  {
+    "priority": 1310,
+    "name": "PrismaVPN_USCentral4",
+    "ipAddress": "134.238.167.80/32"
+  },
+  {
+    "priority": 1320,
+    "name": "PrismaVPN_USSouth5",
+    "ipAddress": "208.127.244.8/32"
+  },
+  {
+    "priority": 1330,
+    "name": "PrismaVPN_USSouth6",
+    "ipAddress": "208.127.245.11/32"
+  }
+]

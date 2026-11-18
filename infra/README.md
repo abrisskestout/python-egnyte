@@ -8,7 +8,11 @@ A Bicep template that creates the Azure resources for the Egnyte per-user test s
 | Resource group | `rg-egnyte-test` |
 | Web app | `egnyte-test` (Linux, Python), `https://egnyte-test.azurewebsites.net` |
 | Region | North Central US (`northcentralus`) |
-| Also created | App Service plan `plan-egnyte-test` (B1), Key Vault `kv-egnyte-test-<6 characters>` (Azure RBAC), the role that lets the web app read the vault, the app settings, Microsoft Entra sign-in, access restrictions that let only the networks in [allowed-ips.json](allowed-ips.json) reach the site |
+| Also created | App Service plan `plan-egnyte-test` (B1), Key Vault `kv-egnyte-test-<6 characters>` (Azure RBAC), the role that lets the web app read the vault, the app settings, Microsoft Entra sign-in, access restrictions that let only the networks in [allowed-ips.json](allowed-ips.json) reach the site, and a Cosmos DB account `cosmos-egnyte-test-<6 characters>` (serverless, database `egnyte-auth`, container `tokens`) that holds each user's Egnyte tokens, with a data role for the web app's managed identity |
+
+The Bicep is split into [main.bicep](main.bicep), which composes everything, and one module per responsibility under
+[modules/](modules/): [cosmos-db.bicep](modules/cosmos-db.bicep) (account, database, container) and
+[cosmos-data-access.bicep](modules/cosmos-data-access.bicep) (who may read and write the data).
 
 The web app name must be globally unique. If `egnyte-test` is taken, deploy with `appName=<other name>`.
 
@@ -60,6 +64,28 @@ What this means in practice:
 
 To see what Azure has applied: `az webapp config access-restriction show --resource-group rg-egnyte-test --name egnyte-test`.
 
+### The Cosmos DB firewall
+
+The same list protects the Cosmos DB account, with two differences:
+
+- **The web app's own outbound addresses are added.** They are not on your list, and without them the app would be locked
+  out of its own database (its calls to Cosmos DB come from App Service, not from the VPN). `main.bicep` reads them from
+  the web app (`outboundIpAddresses` and `possibleOutboundIpAddresses`; 31 addresses on the current B1 plan, 80 rules in
+  all). App Service picks one of them at random for each connection, and the set can change when the plan changes tier, so
+  **redeploy the template after changing the plan size** to refresh the list. On a Premium v4 plan these properties are
+  empty and the template can't do this: use VNet integration instead.
+- **Cosmos DB takes plain addresses**, so the template drops the `/32`. Ranges in `10.0.0.0/8`, `100.64.0.0/10`,
+  `172.16.0.0/12` and `192.168.0.0/16` can't be enforced by Cosmos DB, and a test fails if one is added to the list.
+
+Firewall changes take up to about 15 minutes to apply. If the site reports "Token database unavailable (HTTP 403)", the log
+line (`az webapp log tail`) carries Cosmos DB's own explanation, which will be about either the account firewall or
+missing RBAC permissions, and tells you which of the two to fix. You can also reach the data through the portal's Data
+Explorer only from an allowed address and only with a data role of your own (below).
+
+Authentication is Microsoft Entra only: the account has no keys and no connection strings (`disableLocalAuth`), so
+nothing can be copied out of it or leaked. Azure roles such as Owner and Contributor give **no** access to the data; only
+Cosmos DB data roles do.
+
 ## Deploy
 
 PowerShell, from the repository root.
@@ -80,9 +106,32 @@ $SITE = $out.hostName.value
 "Site:                https://$SITE"
 "Egnyte redirect URI: $($out.egnyteRedirectUri.value)"
 "Entra redirect URI:  $($out.entraRedirectUri.value)"
+"Cosmos DB:           $($out.cosmosAccountName.value)"
 ```
 
 Register the Egnyte redirect URI on your Egnyte API key, and check the Entra one is on the app registration.
+
+The first deployment that adds Cosmos DB takes several minutes longer than before (creating the account, then its firewall).
+If it fails on the data role and the message is about the principal (the web app's new identity), the identity had not
+finished replicating through Entra yet: run the same command again. If Azure answers that the region has "high demand" for new Cosmos DB accounts, deploy with
+`cosmosLocation=<another region>` (the web app can stay where it is).
+
+Tokens that people stored before this change (in files on the web app) are not copied across: each person connects to
+Egnyte once more.
+
+**Optional: look at the data.** The app's tokens are encrypted, so you will only see ids and timestamps, but to open
+the container in the portal's Data Explorer or from your PC you need a data role of your own (Owner is not enough):
+
+```powershell
+az cosmosdb sql role assignment create --account-name $out.cosmosAccountName.value --resource-group rg-egnyte-test `
+  --role-definition-id 00000000-0000-0000-0000-000000000001 `
+  --principal-id (az ad signed-in-user show --query id --output tsv) `
+  --scope "/dbs/egnyte-auth/colls/tokens"
+```
+
+(`...0001` is *Cosmos DB Built-in Data Reader*; the app uses `...0002`, *Data Contributor*. List what the account offers
+with `az cosmosdb sql role definition list`.) A person's document id is the SHA-256 hash of `<tenant id>:<object id>`, so
+to find or delete one: `python -c "import hashlib; print(hashlib.sha256(b'<tenant>:<oid>').hexdigest())"`.
 
 **2. Give yourself access to the vault's secrets.** The vault uses Azure RBAC, so even an Owner can't read or write
 secrets until given a data role. It can take a minute or two to apply.
@@ -172,7 +221,11 @@ To change the infrastructure, edit `main.bicep` and repeat step 1. To change onl
   create a new secret on the app registration and store its value under the same Key Vault name.
 - **Tearing down**: `az group delete --name rg-egnyte-test`. The Key Vault name is derived from the resource group, so a
   vault deleted this way is only soft-deleted: purge it before recreating the group
-  (`az keyvault purge --name <vault> --location northcentralus`), or wait 7 days.
+  (`az keyvault purge --name <vault> --location northcentralus`), or wait 7 days. The Cosmos DB account goes with the
+  group, and every stored token with it (there is no soft delete like the vault's to bring it back).
+- **Cosmos DB is serverless** (`serverless` parameter of [modules/cosmos-db.bicep](modules/cosmos-db.bicep)): you pay per
+  request instead of for reserved throughput, which suits a test site. Per Microsoft, the capacity mode can't be
+  changed after the account is created.
 - The B1 plan bills while it exists. Delete the resource group when the test is over.
 
 ## Checking changes
@@ -188,6 +241,16 @@ Verified: the template compiles with no linter warnings and every parameter has 
 tests against a fake `az` and `curl` (existing secrets are never replaced, values never reach a command line or the
 terminal, retries while role assignments propagate, the smoke test fails on an unprotected site); the Azure CLI flags
 used here exist in the installed CLI.
+
+**Cosmos DB, verified:** the template compiles with no warnings; `az deployment group what-if` against `rg-egnyte-test`
+accepted it (serverless account with local authentication and key-based metadata writes off, database, partitioned
+container, the three `COSMOS_*` settings); the web app reports the outbound addresses the firewall list is built from;
+[tests/test_cosmos_infra.py](tests/test_cosmos_infra.py) keeps the template and the app agreeing and fails if a key or
+connection string ever appears. **Not verified, because it has not been deployed:** the data role assignment (`what-if`
+can't analyse it: its name depends on the web app's identity), that a role scoped to one container is enough for the
+Python SDK (Microsoft documents container scope; widen `scope` in
+[cosmos-data-access.bicep](modules/cosmos-data-access.bicep) to the database or account if the log shows an RBAC
+error), and that the firewall lets the app in.
 
 **Not verified, because nothing has been deployed to a real subscription:** that Azure accepts the template as written,
 in particular the `authsettingsV2` block (including the `sts.windows.net` issuer) and the Python 3.13 runtime in North

@@ -1,13 +1,19 @@
 """Where each user's Egnyte tokens live, and the one-time states that start a sign-in.
 
-FileTokenStore keeps one encrypted file per user (Fernet: AES-128-CBC + HMAC-SHA256) in a directory.
-On App Service that directory is /home/data/..., which is persistent storage. File names are a hash of
-the user key, so nothing a user controls ever becomes a path. The encryption keys come from Key Vault.
+CosmosTokenStore is the store the deployed site uses: one document per user in an Azure Cosmos DB for NoSQL
+container. The app signs in to Cosmos DB with its managed identity (Microsoft Entra ID); there is no account key
+and no connection string anywhere, and the account has key-based access switched off. The document id is a
+hash of the user key, so nothing a user controls ever becomes a document id, and the tokens inside are
+encrypted by this app (Fernet: AES-128-CBC + HMAC-SHA256) before they are sent, with keys from Key Vault, so a
+person who can read the database still can't read a token.
 
-LIMITS (fine for a test deployment, not for production): the per-user locks only work inside one
-process, so run a single gunicorn worker (the README's startup command does). For several workers or
-several instances, replace this class with one backed by Azure Table Storage or SQL, with a lease or
-row lock around refresh. PendingStates is in memory for the same reason.
+FileTokenStore keeps one encrypted file per user in a directory. It is only for running on your own PC without a
+Cosmos DB account (the site refuses to start on App Service without one).
+
+LIMITS (fine for a test deployment, not for production): the per-user locks only work inside one process, so
+run a single gunicorn worker on a single instance (the README's startup command does). Cosmos DB would let
+several instances share the tokens, but two instances could still refresh the same user's token at the same
+moment; fixing that needs a lock or an ETag check around refresh. PendingStates is in memory for the same reason.
 """
 import hashlib
 import json
@@ -19,9 +25,18 @@ import time
 from dataclasses import asdict, dataclass
 from typing import Optional
 
+from azure.core.exceptions import AzureError
 from cryptography.fernet import Fernet, InvalidToken, MultiFernet
 
 log = logging.getLogger("egnyte.tokenstore")
+
+COSMOS_DOCUMENT_VERSION = 1
+COSMOS_OWNER_RESOURCE_MISSING = 1003    # sub-status of a 404 that means the database or container doesn't exist
+LOG_DETAIL_LIMIT = 500
+
+
+class TokenStoreError(Exception):
+    """The token database could not be used. The message is safe to show: a status code, never any details."""
 
 
 @dataclass(frozen=True)
@@ -40,29 +55,157 @@ class TokenRecord:
         return record
 
 
-class FileTokenStore:
-    def __init__(self, directory, keys):
+def user_id(user_key):
+    """The stable, storage-safe name for a user: a hash, so the identity itself never appears in the store."""
+    return hashlib.sha256(user_key.encode("utf-8")).hexdigest()
+
+
+class _SealedStore:
+    """What both stores share: encrypting a TokenRecord, and one lock per user."""
+
+    def __init__(self, keys):
         if not keys:
             raise ValueError("at least one encryption key is required")
         # The first key encrypts; every key can decrypt, which allows key rotation.
         self._fernet = MultiFernet([Fernet(key) for key in keys])  # ValueError for a malformed key
-        self.directory = os.path.abspath(directory)
-        os.makedirs(self.directory, mode=0o700, exist_ok=True)
         self._locks = {}
         self._locks_guard = threading.Lock()
 
-    def _path(self, user_key):
-        return os.path.join(self.directory, hashlib.sha256(user_key.encode("utf-8")).hexdigest() + ".tok")
-
     def lock_for(self, user_key):
-        """One reentrant lock per user (within this process). Reads and writes of a user's file take it,
-        and callers hold it around a whole refresh, so a refresh can't interleave with another one."""
+        """One reentrant lock per user (within this process). Callers hold it around a whole refresh, so a
+        refresh can't interleave with another one."""
         with self._locks_guard:
             return self._locks.setdefault(user_key, threading.RLock())
 
+    def _seal(self, record):
+        return self._fernet.encrypt(json.dumps(asdict(record)).encode("utf-8"))
+
+    def _unseal(self, blob):
+        """The TokenRecord in an encrypted blob, or None if it can't be read (the user just connects again)."""
+        try:
+            return TokenRecord.from_dict(json.loads(self._fernet.decrypt(blob).decode("utf-8")))
+        except (InvalidToken, ValueError, KeyError, TypeError):
+            log.warning("A stored token could not be read (was TOKEN_ENCRYPTION_KEYS changed?); ignoring it.")
+            return None
+
+
+def _status(error):
+    return getattr(error, "status_code", None)
+
+
+def _is_missing_item(error):
+    """A 404 for a document that isn't there. A 404 because the database or container doesn't exist is a
+    configuration fault, not 'this user has no token', and must not be mistaken for one."""
+    return _status(error) == 404 and getattr(error, "sub_status", None) != COSMOS_OWNER_RESOURCE_MISSING
+
+
+class CosmosContainerSource:
+    """Opens the Cosmos DB container on first use, signed in with a Microsoft Entra identity.
+
+    On App Service that identity is the web app's managed identity; on your PC it is whatever `az login` set up.
+    It is opened lazily because the Cosmos DB client contacts the account when it is created: a fault in the
+    configuration should show up as an error page (and a log line), not stop the site from starting."""
+
+    def __init__(self, endpoint, database, container, on_azure=False, credential=None, client_factory=None):
+        self.endpoint, self.database, self.container, self.on_azure = endpoint, database, container, on_azure
+        self._credential, self._client_factory = credential, client_factory
+        self._opened = None
+        self._guard = threading.Lock()
+
+    def _make_credential(self):
+        from azure.identity import DefaultAzureCredential, ManagedIdentityCredential
+        # On Azure use the managed identity and nothing else, so a broken identity is an error rather than a
+        # silent fall-back to some other credential. On a PC, use the developer's `az login`.
+        return ManagedIdentityCredential() if self.on_azure else DefaultAzureCredential()
+
+    def __call__(self):
+        with self._guard:
+            if self._opened is None:
+                try:
+                    factory = self._client_factory
+                    if factory is None:
+                        from azure.cosmos import CosmosClient as factory
+                    client = factory(self.endpoint, credential=self._credential or self._make_credential())
+                    self._opened = client.get_database_client(self.database).get_container_client(self.container)
+                except AzureError as e:
+                    raise _store_error("open the token database", e) from None
+            return self._opened
+
+
+def _store_error(what, error):
+    status = _status(error)
+    log.warning("Could not %s: %s status=%s sub_status=%s: %s", what, type(error).__name__, status,
+                getattr(error, "sub_status", None), str(error)[:LOG_DETAIL_LIMIT])
+    detail = f"HTTP {status}" if status else type(error).__name__
+    return TokenStoreError(f"The token database could not be reached ({detail}).")
+
+
+class CosmosTokenStore(_SealedStore):
+    """One Cosmos DB document per user: {id: hash of the user key, v, data: encrypted record, updated}.
+
+    `container` is a Cosmos DB container (ContainerProxy), or a function that returns one when first called
+    (see CosmosContainerSource). Only point reads, writes and deletes are used, by id, so the account needs no
+    query or index. Any failure other than "no such document" raises TokenStoreError and is never turned into
+    "not connected": a database outage must not look like the user having no Egnyte link."""
+
+    def __init__(self, container, keys):
+        super().__init__(keys)
+        self._container_source = container if callable(container) else (lambda: container)
+
+    def _call(self, what, fn, missing_ok=False):
+        """Run fn(container). With missing_ok, "that document doesn't exist" gives None instead of an error."""
+        try:
+            return fn(self._container_source())
+        except TokenStoreError:
+            raise
+        except AzureError as e:     # Cosmos DB errors, failed sign-in of the identity, network errors
+            if missing_ok and _is_missing_item(e):
+                return None
+            raise _store_error(what, e) from None
+
+    def save(self, user_key, record):
+        item_id = user_id(user_key)
+        document = {"id": item_id, "v": COSMOS_DOCUMENT_VERSION, "updated": time.time(),
+                    "data": self._seal(record).decode("ascii")}
+        self._call("save a token", lambda container: container.upsert_item(document))
+
+    def load(self, user_key):
+        """The user's TokenRecord, or None if they have none or it can't be read (they just connect again)."""
+        item_id = user_id(user_key)
+        document = self._call("read a token", lambda container: container.read_item(item=item_id, partition_key=item_id),
+                              missing_ok=True)
+        if not isinstance(document, dict) or document.get("v") != COSMOS_DOCUMENT_VERSION \
+                or not isinstance(document.get("data"), str):
+            return None
+        return self._unseal(document["data"].encode("ascii", "replace"))
+
+    def delete(self, user_key):
+        item_id = user_id(user_key)
+        self._call("delete a token", lambda container: container.delete_item(item=item_id, partition_key=item_id),
+                   missing_ok=True)
+
+
+def build_token_store(settings):
+    """Cosmos DB when COSMOS_ENDPOINT is set (always, on App Service), otherwise files in token_dir (local use)."""
+    if settings.cosmos_endpoint:
+        source = CosmosContainerSource(settings.cosmos_endpoint, settings.cosmos_database, settings.cosmos_container,
+                                       on_azure=settings.on_azure)
+        return CosmosTokenStore(source, settings.encryption_keys)
+    return FileTokenStore(settings.token_dir, settings.encryption_keys)
+
+
+class FileTokenStore(_SealedStore):
+    def __init__(self, directory, keys):
+        super().__init__(keys)
+        self.directory = os.path.abspath(directory)
+        os.makedirs(self.directory, mode=0o700, exist_ok=True)
+
+    def _path(self, user_key):
+        return os.path.join(self.directory, user_id(user_key) + ".tok")
+
     def save(self, user_key, record):
         path = self._path(user_key)
-        blob = self._fernet.encrypt(json.dumps(asdict(record)).encode("utf-8"))
+        blob = self._seal(record)
         temp = f"{path}.{secrets.token_hex(4)}.tmp"
         with self.lock_for(user_key):
             fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0), 0o600)
@@ -86,11 +229,7 @@ class FileTokenStore:
                 blob = fp.read()
         except FileNotFoundError:
             return None
-        try:
-            return TokenRecord.from_dict(json.loads(self._fernet.decrypt(blob).decode("utf-8")))
-        except (InvalidToken, ValueError, KeyError, TypeError):
-            log.warning("A stored token could not be read (was TOKEN_ENCRYPTION_KEYS changed?); ignoring it.")
-            return None
+        return self._unseal(blob)
 
     def delete(self, user_key):
         with self.lock_for(user_key):

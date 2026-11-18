@@ -229,16 +229,17 @@ class FakeClient:
         self.closed = True
 
 
-def build_stack(test, client_factory=None, **setting_overrides):
+def build_stack(test, client_factory=None, store_factory=None, **setting_overrides):
     """Settings, a real encrypted store in a temp dir, fake Egnyte and fake OAuth, wired into an app.
 
-    client_factory replaces the fake Egnyte client, e.g. to run the app over the real egnyte library."""
+    client_factory replaces the fake Egnyte client, e.g. to run the app over the real egnyte library.
+    store_factory(settings) replaces the token store, e.g. to run the app over Cosmos DB with a fake container."""
     from app import create_app
     from token_store import PendingStates
     folder = tempfile.TemporaryDirectory()
     test.addCleanup(folder.cleanup)
     settings = make_settings(folder.name, **setting_overrides)
-    store = FileTokenStore(settings.token_dir, settings.encryption_keys)
+    store = store_factory(settings) if store_factory else FileTokenStore(settings.token_dir, settings.encryption_keys)
     oauth, world = FakeOAuth(), FakeEgnyte()
     clock = SimpleNamespace(now=1000.0)      # advance clock.now to test expiry of pending sign-ins
     pending = PendingStates(clock=lambda: clock.now)

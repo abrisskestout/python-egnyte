@@ -7,7 +7,9 @@ at the same folder can see different things.
 
 - Secrets (Egnyte client secret, session key, token-encryption key) come from **Azure Key Vault**.
 - The Egnyte client ID and other plain settings come from **App Settings**.
-- Egnyte tokens, including the refresh token, are stored encrypted, one file per user.
+- Egnyte tokens, including the refresh token, are stored encrypted, one document per user, in **Azure Cosmos DB**
+  (NoSQL). The app signs in to Cosmos DB with its **managed identity**: there is no account key and no connection
+  string anywhere, and the account has key-based access switched off.
 - Built for **Azure App Service on Linux**. The `egnyte/` library is bundled into the package, not
   installed from PyPI (PyPI only has a 2017 release for modern Python).
 
@@ -120,9 +122,22 @@ passes the literal `@Microsoft.KeyVault(...)` text to the app. The app detects t
 with `EGNYTE_CLIENT_SECRET still holds an unresolved Key Vault reference`; see the log stream.
 
 Optional settings: `EGNYTE_SCOPE` (default `Egnyte.filesystem`), `EGNYTE_MAX_RPS` (default 2, shared by all
-users), `TOKEN_STORE_DIR` (default `/home/data/egnyte-tokens`, which is persistent on App Service), and
-`PERMISSION_TEST_FOLDER` (the Egnyte folder for the Permission test page, default
+users), and `PERMISSION_TEST_FOLDER` (the Egnyte folder for the Permission test page, default
 `/Shared/Teams/IT/Infrastructure/Azure App Test`).
+
+**Where the tokens are kept.** On App Service the site needs `COSMOS_ENDPOINT` (the account's
+`https://<account>.documents.azure.com:443/` address) and refuses to start without it; `COSMOS_DATABASE` (default
+`egnyte-auth`) and `COSMOS_CONTAINER` (default `tokens`) name the container, which must already exist and be
+partitioned on `/id`. [infra/main.bicep](../infra/main.bicep) creates all of that and sets the three settings. These are
+addresses and names, not credentials: the site signs in with the web app's system-assigned managed identity, which
+needs the data role *Cosmos DB Built-in Data Contributor* on that container (the Bicep assigns it). The connection is
+opened on first use, so a mistake in this setup shows as an error page ("Token database unavailable (HTTP 403)")
+and a log line, not as a site that won't start.
+
+Running on your own PC without Cosmos DB: leave `COSMOS_ENDPOINT` unset and the site falls back to encrypted files
+under `TOKEN_STORE_DIR` (default `./.egnyte-tokens`). That fallback is refused on App Service. To try the real
+thing from your PC, set `COSMOS_ENDPOINT` to the account, run `az login`, and give your own user a Cosmos DB data role
+(see [infra/README.md](../infra/README.md)).
 
 ## 6. Turn on Microsoft sign-in (required)
 
@@ -189,9 +204,13 @@ app starts. To point it somewhere else, set the setting (or the `permissionTestF
 
 Verified by the test suite (`python -m unittest discover -s web_app/tests -v`, no network, no Azure, fake Egnyte):
 each request uses only its own user's token; a sign-in `state` works once, only for the user who started it, and
-expires; the secret and tokens never appear in pages, URLs or logs; tokens are encrypted on disk; disconnect needs a
-CSRF token; file names are escaped; downloads are attachments; the packaged zip starts from a clean folder and uses
-its bundled `egnyte/`.
+expires; the secret and tokens never appear in pages, URLs or logs; tokens are encrypted before they reach the store
+(a database reader sees only ciphertext and a hashed user id); disconnect needs a CSRF token; file names are escaped;
+downloads are attachments; the packaged zip starts from a clean folder and uses its bundled `egnyte/`. The Cosmos DB
+store is tested against a fake container that raises the Azure SDK's real exception types: a refusal, a failed
+identity sign-in, a network failure or a missing container is an error page and **never** looks like "not connected"
+(so an outage can't disconnect anyone), the credential is the managed identity and never a key, and a refreshed
+token is written back.
 
 **Not verified against the real services**, so expect to look at these on the first deployment:
 
@@ -204,14 +223,22 @@ its bundled `egnyte/`.
 - **`WEBSITE_AUTH_ENABLED`.** The app logs a warning if that variable isn't `True` on App Service; confirm the check
   matches how your app reports it.
 - **The Egnyte redirect.** `https://<APP>.azurewebsites.net/egnyte/callback` has to be accepted for your API key.
+- **Cosmos DB with the real service.** The store has only been run against a fake container. On the first
+  deployment check: that the managed identity can read and write (container-scoped data role; Microsoft documents
+  container scope as supported, but this has not been seen working here), that the account firewall lets the app in
+  (the template adds the web app's outbound addresses), and that a missing document reads as "not connected" rather
+  than an error.
 
 ## Limits (fine for a test, change before production)
 
-- **One worker, one instance.** Token refresh locks and in-flight sign-ins are in memory. For several workers or
-  instances, move tokens to Azure Table Storage or SQL with a lock around refresh.
-- **Tokens are files** under `/home/data/egnyte-tokens`, encrypted with Fernet. Rotating the key: put the new key
-  first in `TOKEN_ENCRYPTION_KEYS` (comma separated), keep the old one second; each user's file is re-encrypted the
-  next time it is saved.
+- **One worker, one instance.** Token refresh locks and in-flight sign-ins are in memory. Cosmos DB would let several
+  instances share the tokens, but two instances could refresh the same user's token at the same moment, and the loser
+  would be disconnected if Egnyte rotates refresh tokens. Before scaling out, add a lock or an ETag check around refresh,
+  and move the in-flight sign-in states out of memory.
+- **Tokens are Cosmos DB documents** (`id` = SHA-256 of `<tenant id>:<object id>`), encrypted by the app with Fernet before
+  they are stored. Rotating the key: put the new key first in `TOKEN_ENCRYPTION_KEYS` (comma separated), keep the old
+  one second; each user's document is re-encrypted the next time it is saved. Tokens kept in files by an earlier
+  version are not copied over: each person connects to Egnyte once more.
 - **One Egnyte API key serves everyone**, and Egnyte rate-limits per key. The site spaces all users' requests at
   `EGNYTE_MAX_RPS` (default 2 per second) across the whole process.
 - **No check that the Egnyte account belongs to the Entra user.** The home page shows both side by side. Deciding
@@ -248,7 +275,7 @@ The full sign-in is meant to be tested on the deployed site.
 | `app.py` | Routes, CSRF protection, security headers, error pages |
 | `egnyte_access.py` | Builds a client from one user's token; refresh, disconnect on rejection, shared rate limit |
 | `egnyte_oauth.py` | OAuth authorization-code and refresh helpers (adapted from `test_app/egnyte_oauth_login.py`) |
-| `token_store.py` | Encrypted per-user token files; one-time sign-in states |
+| `token_store.py` | Encrypted per-user tokens in Cosmos DB (managed identity; local files as a PC-only fallback); one-time sign-in states |
 | `identity.py` | Reads the signed-in Entra user from App Service Authentication |
 | `settings.py` | App Settings and Key Vault loading |
 | `wsgi.py` | gunicorn entry point |

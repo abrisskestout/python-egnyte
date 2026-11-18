@@ -22,8 +22,13 @@ import egnyte_oauth
 KV_REFERENCE_PREFIX = "@Microsoft.KeyVault("
 VAULT_HOST_SUFFIXES = (".vault.azure.net", ".vault.azure.cn", ".vault.usgovcloudapi.net",
                        ".vault.microsoftazure.de", ".managedhsm.azure.net")
-AZURE_TOKEN_DIR = "/home/data/egnyte-tokens"   # /home is the persistent, shared storage on App Service Linux
-LOCAL_TOKEN_DIR = ".egnyte-tokens"
+LOCAL_TOKEN_DIR = ".egnyte-tokens"   # token files, only when running on a PC without Cosmos DB
+COSMOS_HOST_SUFFIXES = (".documents.azure.com", ".documents.azure.cn", ".documents.azure.us",
+                        ".documents.microsoftazure.de")
+# Where the tokens live in Cosmos DB. infra/main.bicep carries the same defaults;
+# infra/tests/test_cosmos_infra.py keeps the two in step.
+DEFAULT_COSMOS_DATABASE = "egnyte-auth"
+DEFAULT_COSMOS_CONTAINER = "tokens"
 
 # environment variable -> name of the secret in the vault
 SECRET_NAMES = {
@@ -57,6 +62,32 @@ def normalize_folder(value):
         raise ConfigError("PERMISSION_TEST_FOLDER must be an Egnyte folder at least two levels deep, "
                           "such as /Shared/Teams/IT, with no '..', '.' or empty parts.")
     return path
+
+
+def normalize_cosmos_endpoint(value):
+    """The Cosmos DB account endpoint from configuration, as https://<account>.documents.azure.com:443/.
+
+    Only a plain https address of a Cosmos DB account is accepted: no credentials in the URL (a connection string
+    or key has no place here; the app signs in with its managed identity), no other port, path or query."""
+    try:
+        parts = urllib.parse.urlsplit((value or "").strip())
+        port = parts.port
+    except ValueError:
+        port = -1
+        parts = None
+    host = ((parts.hostname if parts else "") or "").lower()
+    if (parts is None or parts.scheme != "https" or not host.endswith(COSMOS_HOST_SUFFIXES) or port not in (None, 443)
+            or parts.username or parts.password or parts.path not in ("", "/") or parts.query or parts.fragment):
+        raise ConfigError("COSMOS_ENDPOINT must look like https://<account name>.documents.azure.com:443/ "
+                          "(an address only: no key and no connection string).")
+    return f"https://{host}:443/"
+
+
+def _cosmos_name(environ, name, default):
+    value = _plain(environ, name, required=False) or default
+    if not re.fullmatch(r"[A-Za-z0-9._-]{1,255}", value):
+        raise ConfigError(f"{name} may only contain letters, digits, '.', '_' and '-'.")
+    return value
 
 
 class VaultReader:
@@ -99,6 +130,9 @@ class Settings:
     allow_dev_user: bool = False
     on_azure: bool = False
     permission_folder: str = DEFAULT_PERMISSION_FOLDER
+    cosmos_endpoint: str = ""        # empty: tokens go in files under token_dir (never allowed on App Service)
+    cosmos_database: str = DEFAULT_COSMOS_DATABASE
+    cosmos_container: str = DEFAULT_COSMOS_CONTAINER
 
 
 def _plain(environ, name, required=True):
@@ -164,12 +198,21 @@ def load_settings(environ=None, vault=None):
     if not keys:
         raise ConfigError("TOKEN_ENCRYPTION_KEYS must hold at least one key.")
 
-    token_dir = (environ.get("TOKEN_STORE_DIR") or "").strip() or (
-        AZURE_TOKEN_DIR if on_azure else os.path.join(os.getcwd(), LOCAL_TOKEN_DIR))
+    token_dir = (environ.get("TOKEN_STORE_DIR") or "").strip() or os.path.join(os.getcwd(), LOCAL_TOKEN_DIR)
     permission_folder = normalize_folder(_plain(environ, "PERMISSION_TEST_FOLDER", required=False)
                                          or DEFAULT_PERMISSION_FOLDER)
+
+    cosmos_endpoint = _plain(environ, "COSMOS_ENDPOINT", required=False)
+    if cosmos_endpoint:
+        cosmos_endpoint = normalize_cosmos_endpoint(cosmos_endpoint)
+    elif on_azure:
+        raise ConfigError("COSMOS_ENDPOINT is not set. On App Service the Egnyte tokens are kept in Cosmos DB "
+                          "(created by infra/main.bicep, which also sets this app setting).")
     return Settings(
         domain=domain, client_id=client_id, redirect_uri=redirect_uri, scope=scope,
         client_secret=client_secret, secret_key=secret_key, encryption_keys=keys,
         token_dir=token_dir, max_rps=_number(environ, "EGNYTE_MAX_RPS", 2.0, 0.1, 20.0),
-        allow_dev_user=allow_dev_user, on_azure=on_azure, permission_folder=permission_folder)
+        allow_dev_user=allow_dev_user, on_azure=on_azure, permission_folder=permission_folder,
+        cosmos_endpoint=cosmos_endpoint,
+        cosmos_database=_cosmos_name(environ, "COSMOS_DATABASE", DEFAULT_COSMOS_DATABASE),
+        cosmos_container=_cosmos_name(environ, "COSMOS_CONTAINER", DEFAULT_COSMOS_CONTAINER))

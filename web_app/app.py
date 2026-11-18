@@ -20,7 +20,7 @@ import identity
 import permission_check
 from egnyte_access import EgnyteAccess, NotConnected, RateLimiter  # sets up the egnyte import path
 from egnyte import exc  # noqa: E402  (must come after egnyte_access)
-from token_store import FileTokenStore, PendingStates
+from token_store import PendingStates, TokenStoreError, build_token_store
 
 MAX_DOWNLOAD_BYTES = 25 * 1024 * 1024
 LISTING_LIMIT = 500
@@ -60,7 +60,7 @@ def create_app(settings, *, store=None, access=None, oauth=egnyte_oauth, pending
         SESSION_COOKIE_SAMESITE="Lax",
         MAX_CONTENT_LENGTH=64 * 1024,
     )
-    store = store or FileTokenStore(settings.token_dir, settings.encryption_keys)
+    store = store or build_token_store(settings)
     pending = pending or PendingStates()
     access = access or EgnyteAccess(settings, store, oauth, RateLimiter(settings.max_rps))
     if settings.on_azure:
@@ -123,6 +123,13 @@ def create_app(settings, *, store=None, access=None, oauth=egnyte_oauth, pending
     @app.errorhandler(NotConnected)
     def not_connected(e):
         return error_page(409, "Connect to Egnyte", str(e), connect=True)
+
+    @app.errorhandler(TokenStoreError)
+    def token_store_unavailable(e):
+        # Deliberately not "not connected": the user's link may be fine, we just can't read it right now.
+        # The message holds only a status code; the details are in the application log.
+        return error_page(503, "Token database unavailable", f"{e} Try again in a minute. If it keeps happening, "
+                          "the site's Cosmos DB firewall or data role needs attention (see the application log).")
 
     @app.errorhandler(exc.InsufficientPermissions)
     def forbidden(_):

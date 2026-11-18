@@ -58,8 +58,8 @@ class LoadingTests(unittest.TestCase):
         for secret in (SECRET, "k" * 40, KEY):
             self.assertNotIn(secret, text)
 
-    def test_token_directory_defaults(self):
-        self.assertEqual(load(WEBSITE_SITE_NAME="mysite").token_dir, "/home/data/egnyte-tokens")
+    def test_token_directory_is_only_for_local_use(self):
+        # Files are the local-development store; on App Service the tokens live in Cosmos DB (CosmosSettingsTests).
         self.assertTrue(load().token_dir.endswith(".egnyte-tokens"))
         self.assertEqual(load(TOKEN_STORE_DIR="/data/t").token_dir, "/data/t")
 
@@ -124,6 +124,54 @@ class PermissionFolderTests(unittest.TestCase):
     def test_an_unresolved_key_vault_reference_is_caught(self):
         with self.assertRaises(cfg.ConfigError):
             load(PERMISSION_TEST_FOLDER="@Microsoft.KeyVault(VaultName=v;SecretName=s)")
+
+
+class CosmosSettingsTests(unittest.TestCase):
+    ENDPOINT = "https://cosmos-egnyte-test-abc123.documents.azure.com:443/"
+
+    def test_without_an_endpoint_locally_the_defaults_apply_and_files_are_used(self):
+        s = load()
+        self.assertEqual((s.cosmos_endpoint, s.cosmos_database, s.cosmos_container), ("", "egnyte-auth", "tokens"))
+
+    def test_the_endpoint_is_tidied_to_one_form(self):
+        for given in (self.ENDPOINT, self.ENDPOINT.upper().replace("HTTPS", "https"), self.ENDPOINT.rstrip("/"),
+                      "https://cosmos-egnyte-test-abc123.documents.azure.com", " " + self.ENDPOINT + " "):
+            with self.subTest(given=given):
+                self.assertEqual(load(COSMOS_ENDPOINT=given).cosmos_endpoint, self.ENDPOINT)
+
+    def test_it_is_required_on_app_service(self):
+        with self.assertRaises(cfg.ConfigError) as caught:
+            load(WEBSITE_SITE_NAME="mysite")
+        self.assertIn("COSMOS_ENDPOINT", str(caught.exception))
+        s = load(WEBSITE_SITE_NAME="mysite", COSMOS_ENDPOINT=self.ENDPOINT)
+        self.assertTrue(s.on_azure)
+        self.assertEqual(s.cosmos_endpoint, self.ENDPOINT)
+
+    def test_only_a_plain_cosmos_address_is_accepted_never_a_key_or_connection_string(self):
+        bad = ["http://acct.documents.azure.com:443/", "https://evil.example.com", "https://acct.documents.azure.com.evil.com",
+               "https://acct.documents.azure.com:8443", "acct.documents.azure.com", "https://documents.azure.com",
+               "https://user:pw@acct.documents.azure.com/", "https://acct.documents.azure.com/dbs?x=1",
+               "https://acct.documents.azure.com/#frag", "https://acct.documents.azure.com:notaport/",
+               "AccountEndpoint=https://acct.documents.azure.com:443/;AccountKey=SUPERKEY123==;"]
+        for value in bad:
+            with self.subTest(value=value[:50]), self.assertRaises(cfg.ConfigError) as caught:
+                load(COSMOS_ENDPOINT=value)
+            self.assertNotIn("SUPERKEY123", str(caught.exception))     # a pasted key is never echoed back
+
+    def test_an_unresolved_key_vault_reference_is_caught(self):
+        with self.assertRaises(cfg.ConfigError):
+            load(COSMOS_ENDPOINT="@Microsoft.KeyVault(VaultName=v;SecretName=s)")
+
+    def test_database_and_container_names(self):
+        s = load(COSMOS_DATABASE="mydb", COSMOS_CONTAINER="my.tokens_1-a")
+        self.assertEqual((s.cosmos_database, s.cosmos_container), ("mydb", "my.tokens_1-a"))
+        self.assertEqual(load(COSMOS_DATABASE="  ").cosmos_database, "egnyte-auth")
+        for bad in ("a/b", "a b", "a\\b", "a#b", "a?b", "x" * 256):
+            with self.subTest(bad=bad[:20]):
+                with self.assertRaises(cfg.ConfigError):
+                    load(COSMOS_DATABASE=bad)
+                with self.assertRaises(cfg.ConfigError):
+                    load(COSMOS_CONTAINER=bad)
 
 
 class KeyVaultTests(unittest.TestCase):

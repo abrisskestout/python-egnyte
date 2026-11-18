@@ -58,9 +58,19 @@ class AuthenticationTests(Base):
         for response in (self.alice.get("/"), self.anon.get("/"), self.anon.get("/healthz")):
             self.assertEqual(response.headers["Cache-Control"], "no-store")
             self.assertEqual(response.headers["X-Content-Type-Options"], "nosniff")
-            self.assertEqual(response.headers["Referrer-Policy"], "no-referrer")
+            # same-origin: nothing is sent to other sites, but our own form POSTs still carry a Referer, which
+            # App Service Authentication's CSRF check demands (with "no-referrer" it answered every POST with 403).
+            self.assertEqual(response.headers["Referrer-Policy"], "same-origin")
             self.assertIn("default-src 'none'", response.headers["Content-Security-Policy"])
             self.assertIn("frame-ancestors 'none'", response.headers["Content-Security-Policy"])
+
+    def test_the_referrer_policy_lets_our_own_forms_send_a_referer(self):
+        # Guards the production bug: with "no-referrer" the browser sends NO Referer on a form POST, so App Service
+        # Authentication logs "Cross-site request forgery detected ... from referer ''" and returns 403 for every
+        # button. Only policies that send the full URL on same-origin requests are accepted here.
+        for response in (self.alice.get("/"), self.alice.get("/permissions")):
+            self.assertIn(response.headers["Referrer-Policy"],
+                          {"same-origin", "strict-origin-when-cross-origin", "origin-when-cross-origin"})
 
     def test_session_cookie_is_locked_down(self):
         self.link(self.alice, "code-alice")

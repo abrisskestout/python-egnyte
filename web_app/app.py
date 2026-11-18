@@ -100,7 +100,10 @@ def create_app(settings, *, store=None, access=None, oauth=egnyte_oauth, pending
     def secure_headers(response):
         response.headers["Cache-Control"] = "no-store"
         response.headers["X-Content-Type-Options"] = "nosniff"
-        response.headers["Referrer-Policy"] = "no-referrer"
+        # Not "no-referrer": App Service Authentication rejects a cookie-authenticated POST that has no Referer
+        # ("Cross-site request forgery detected ... from referer ''", 403 before the app ever runs), which made
+        # every button on the site fail. "same-origin" still sends nothing to other sites (Egnyte, Microsoft).
+        response.headers["Referrer-Policy"] = "same-origin"
         response.headers["Content-Security-Policy"] = CONTENT_SECURITY_POLICY
         return response
 

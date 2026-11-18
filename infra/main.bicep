@@ -42,6 +42,9 @@ param egnyteClientId string = 'K0eHAXplxpocUex3XX84mddMnMh5PsnHDXbHhPGMVt0U65FQ'
 @description('Egnyte permissions the app asks each user for.')
 param egnyteScope string = 'Egnyte.filesystem'
 
+@description('The Egnyte folder the Permission test page works in (forward slashes). The same default is in web_app/settings.py.')
+param permissionTestFolder string = '/Shared/Teams/IT/Infrastructure/Azure App Test'
+
 @description('Client ID of the Microsoft Entra app registration used for sign-in to the site (not the Egnyte key).')
 param entraClientId string = 'dc1b375f-e9eb-42e3-b126-7a2de72e73be'
 
@@ -149,6 +152,7 @@ resource appSettings 'Microsoft.Web/sites/config@2023-12-01' = {
     EGNYTE_DOMAIN: egnyteDomain
     EGNYTE_CLIENT_ID: egnyteClientId
     EGNYTE_SCOPE: egnyteScope
+    PERMISSION_TEST_FOLDER: permissionTestFolder
     EGNYTE_REDIRECT_URI: 'https://${webApp.properties.defaultHostName}/egnyte/callback'
     // Key Vault references: App Service reads these with the app's identity and passes the values on as
     // ordinary environment variables. The URIs have no version, so a rotated secret is picked up.

@@ -93,6 +93,39 @@ class DevUserTests(unittest.TestCase):
             load(EGNYTE_REDIRECT_URI="http://localhost:5000/egnyte/callback")
 
 
+class PermissionFolderTests(unittest.TestCase):
+    EXPECTED = "/Shared/Teams/IT/Infrastructure/Azure App Test"
+
+    def test_the_default_is_the_azure_app_test_folder(self):
+        self.assertEqual(cfg.DEFAULT_PERMISSION_FOLDER, self.EXPECTED)
+        self.assertEqual(load().permission_folder, self.EXPECTED)
+
+    def test_a_blank_setting_means_the_default(self):
+        self.assertEqual(load(PERMISSION_TEST_FOLDER="   ").permission_folder, self.EXPECTED)
+
+    def test_either_slash_style_is_accepted_and_tidied(self):
+        cases = {
+            r"\Shared\Teams\IT\Infrastructure\Azure App Test": self.EXPECTED,    # as it was first written
+            "Shared/Teams/IT/Infrastructure/Azure App Test": self.EXPECTED,
+            "/Shared/Teams/IT/Infrastructure/Azure App Test/": self.EXPECTED,
+            "  /Shared/Teams/IT/  ": "/Shared/Teams/IT",
+            "/Private/alice.eg/Test": "/Private/alice.eg/Test",
+        }
+        for given, expected in cases.items():
+            with self.subTest(given=given):
+                self.assertEqual(load(PERMISSION_TEST_FOLDER=given).permission_folder, expected)
+
+    def test_unusable_values_are_refused(self):
+        for bad in ("/", "/Shared", "Shared", "//Shared//x", "/Shared/../Private/x", "/Shared/./x", "/Shared/a\nb",
+                    "/Shared/" + "x" * 600):
+            with self.subTest(bad=bad[:40]), self.assertRaises(cfg.ConfigError):
+                load(PERMISSION_TEST_FOLDER=bad)
+
+    def test_an_unresolved_key_vault_reference_is_caught(self):
+        with self.assertRaises(cfg.ConfigError):
+            load(PERMISSION_TEST_FOLDER="@Microsoft.KeyVault(VaultName=v;SecretName=s)")
+
+
 class KeyVaultTests(unittest.TestCase):
     def test_unresolved_key_vault_reference_is_caught(self):
         reference = "@Microsoft.KeyVault(SecretUri=https://v.vault.azure.net/secrets/egnyte-client-secret/)"

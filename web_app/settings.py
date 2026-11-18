@@ -33,8 +33,30 @@ SECRET_NAMES = {
 }
 
 
+# The Egnyte folder the Permission test page works in (the PERMISSION_TEST_FOLDER app setting overrides it).
+# infra/main.bicep carries the same default; infra/tests/test_bicep_settings.py keeps the two in step.
+DEFAULT_PERMISSION_FOLDER = "/Shared/Teams/IT/Infrastructure/Azure App Test"
+MAX_FOLDER_LENGTH = 512
+
+
 class ConfigError(Exception):
     """The app is misconfigured. The message names the setting and never contains a secret."""
+
+
+def normalize_folder(value):
+    """An Egnyte folder path from configuration: either slash style, with or without the leading or trailing slash.
+
+    '\\Shared\\Teams\\IT' and 'Shared/Teams/IT/' both become '/Shared/Teams/IT'. Raises ConfigError for anything that
+    isn't a plain path at least two levels deep (so never the root, and never '..')."""
+    text = (value or "").strip().replace("\\", "/")
+    if len(text) > MAX_FOLDER_LENGTH or any(ord(ch) < 32 or ord(ch) == 127 for ch in text):
+        raise ConfigError("PERMISSION_TEST_FOLDER is too long or contains control characters.")
+    path = "/" + text.strip("/")
+    parts = path.split("/")[1:]
+    if len(parts) < 2 or any(part in ("", ".", "..") for part in parts):
+        raise ConfigError("PERMISSION_TEST_FOLDER must be an Egnyte folder at least two levels deep, "
+                          "such as /Shared/Teams/IT, with no '..', '.' or empty parts.")
+    return path
 
 
 class VaultReader:
@@ -76,6 +98,7 @@ class Settings:
     max_rps: float = 2.0
     allow_dev_user: bool = False
     on_azure: bool = False
+    permission_folder: str = DEFAULT_PERMISSION_FOLDER
 
 
 def _plain(environ, name, required=True):
@@ -143,8 +166,10 @@ def load_settings(environ=None, vault=None):
 
     token_dir = (environ.get("TOKEN_STORE_DIR") or "").strip() or (
         AZURE_TOKEN_DIR if on_azure else os.path.join(os.getcwd(), LOCAL_TOKEN_DIR))
+    permission_folder = normalize_folder(_plain(environ, "PERMISSION_TEST_FOLDER", required=False)
+                                         or DEFAULT_PERMISSION_FOLDER)
     return Settings(
         domain=domain, client_id=client_id, redirect_uri=redirect_uri, scope=scope,
         client_secret=client_secret, secret_key=secret_key, encryption_keys=keys,
         token_dir=token_dir, max_rps=_number(environ, "EGNYTE_MAX_RPS", 2.0, 0.1, 20.0),
-        allow_dev_user=allow_dev_user, on_azure=on_azure)
+        allow_dev_user=allow_dev_user, on_azure=on_azure, permission_folder=permission_folder)

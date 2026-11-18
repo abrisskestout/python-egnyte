@@ -1,9 +1,9 @@
-"""The permission test section: three buttons on /Shared/IT/Test Web App, run as the signed-in user."""
+"""The permission test section: three buttons on the configured Egnyte folder, run as the signed-in user."""
 import hashlib
 import json
 import unittest
 from types import SimpleNamespace
-from urllib.parse import unquote, urlsplit
+from urllib.parse import quote, unquote, urlsplit
 
 import requests
 
@@ -12,8 +12,10 @@ import permission_check as pc
 from egnyte import exc
 from egnyte.client import EgnyteClient
 from helpers import (ALICE, BOB, TENANT, as_user, build_stack, connect_user, csrf_from, page_text, principal)
+from settings import DEFAULT_PERMISSION_FOLDER
 
-FOLDER = "/Shared/IT/Test Web App"
+FOLDER = DEFAULT_PERMISSION_FOLDER
+ENCODED = quote(FOLDER, safe="/")          # how the library writes the folder into a URL
 CAROL = "cccccccc-cccc-cccc-cccc-cccccccccccc"
 
 
@@ -307,13 +309,58 @@ class SafetyTests(Base):
         self.assertEqual(self.world.authz_writes, [("alice-access", "delete", "Text Test.txt")])
 
 
+class ConfiguredFolderTests(unittest.TestCase):
+    """The folder comes from the PERMISSION_TEST_FOLDER setting, not from the code."""
+
+    OTHER = "/Shared/Other Team/My Test"
+
+    def setUp(self):
+        self.stack = build_stack(self, permission_folder=self.OTHER)
+        self.world = self.stack.world
+        self.world.authz_folder = self.OTHER          # the fake Egnyte has the folder where it is configured
+        self.alice = as_user(self.stack.app.test_client(), ALICE, "alice@example.com")
+        self.bob = as_user(self.stack.app.test_client(), BOB, "bob@example.com")
+        for client, code in ((self.alice, "code-alice"), (self.bob, "code-bob")):
+            self.assertEqual(connect_user(self, client, code).status_code, 302)
+
+    def press(self, client, action):
+        token = csrf_from(client.get("/permissions"))
+        return client.post(f"/permissions/{action}", data={"csrf": token}, follow_redirects=True)
+
+    def test_the_page_shows_and_reads_the_configured_folder(self):
+        text = page_text(self.alice.get("/permissions"))
+        self.assertIn(self.OTHER, text)
+        self.assertNotIn(DEFAULT_PERMISSION_FOLDER, text)
+        self.assertIn("first line", text)             # it found the file there, so it looked in the right place
+
+    def test_the_buttons_act_in_the_configured_folder(self):
+        self.press(self.alice, "edit")
+        self.assertEqual(self.world.authz_files["Text Test.txt"], b"first line\nedited by alice@example.com\n")
+        self.press(self.alice, "delete")
+        self.assertEqual(self.world.authz_files, {})
+        self.press(self.alice, "create")
+        self.assertEqual(self.world.authz_files, {"Text Test.txt": b"created by alice@example.com\n"})
+
+    def test_a_refusal_names_the_configured_folder(self):
+        text = page_text(self.press(self.bob, "edit"))
+        self.assertIn(f"Egnyte refused: the Egnyte account bob.eg is not allowed to edit files in {self.OTHER}.", text)
+        self.assertNotIn(DEFAULT_PERMISSION_FOLDER, text)
+
+    def test_nothing_is_done_in_the_default_folder_when_it_is_not_the_configured_one(self):
+        # The fake only knows the configured folder: if the app used the default instead it would find no folder.
+        self.world.authz_folder = DEFAULT_PERMISSION_FOLDER
+        text = page_text(self.press(self.alice, "edit"))
+        self.assertIn(f"The folder {self.OTHER} does not exist, or your Egnyte account can't see it.", text)
+        self.assertEqual(self.world.authz_writes, [])
+
+
 # ------------------------------------------------------------------------------------------------
 # The same code over the REAL egnyte library, with only the HTTP layer faked. This is what catches a
 # fake that has drifted from the library: URL encoding of the spaces, what a listing looks like, how an
 # upload is sent, how a refusal (403) surfaces.
 
 class FakeEgnyteHttp:
-    """Stands in for requests.Session.request under the real library, for the Test Web App folder."""
+    """Stands in for requests.Session.request under the real library, for the permission-test folder."""
 
     def __init__(self, files, level="write"):
         self.files, self.level, self.requests = files, level, []
@@ -336,7 +383,8 @@ class FakeEgnyteHttp:
             files = [{"name": n, "path": f"{FOLDER}/{n}", "is_folder": False, "size": len(d),
                       "checksum": hashlib.sha512(d).hexdigest(), "last_modified": "Wed, 18 Nov 2026 01:00:00 GMT",
                       "uploaded_by": "someone.eg", "entry_id": "e", "num_versions": 1} for n, d in self.files.items()]
-            body = {"name": "Test Web App", "path": FOLDER, "is_folder": True, "folder_id": "f", "folders": [], "files": files}
+            body = {"name": FOLDER.rsplit("/", 1)[-1], "path": FOLDER, "is_folder": True, "folder_id": "f",
+                    "folders": [], "files": files}
             return self.reply(200, json.dumps(body).encode(), {"content-type": "application/json"})
         if method == "GET" and path.startswith(content):
             name = path[len(content):]
@@ -371,44 +419,44 @@ class RealLibraryTests(unittest.TestCase):
         self.client = real_client(self.http)
 
     def test_inspect_reads_the_listing_and_the_file(self):
-        state = pc.inspect(self.client)
+        state = pc.inspect(self.client, FOLDER)
         self.assertEqual(state["folder_status"], "ok")
         self.assertEqual(state["file"], {"name": "Text Test.txt", "size": 11, "modified": "Wed, 18 Nov 2026 01:00:00 GMT",
                                          "modified_by": "someone.eg"})
         self.assertEqual(state["preview"], "first line\n")
         self.assertEqual(self.http.requests, [
-            ("GET", "/pubapi/v1/fs/Shared/IT/Test%20Web%20App"),
-            ("GET", "/pubapi/v1/fs-content/Shared/IT/Test%20Web%20App/Text%20Test.txt")])
+            ("GET", "/pubapi/v1/fs" + ENCODED),
+            ("GET", "/pubapi/v1/fs-content" + ENCODED + "/Text%20Test.txt")])
 
     def test_edit_downloads_then_uploads_the_whole_file_to_the_same_path(self):
-        self.assertEqual(pc.edit(self.client, "alice@example.com"), "Text Test.txt")
+        self.assertEqual(pc.edit(self.client, FOLDER, "alice@example.com"), "Text Test.txt")
         self.assertEqual(self.files["Text Test.txt"], b"first line\nedited by alice@example.com\n")
-        self.assertEqual(self.http.requests[-1], ("POST", "/pubapi/v1/fs-content/Shared/IT/Test%20Web%20App/Text%20Test.txt"))
+        self.assertEqual(self.http.requests[-1], ("POST", "/pubapi/v1/fs-content" + ENCODED + "/Text%20Test.txt"))
 
     def test_create_posts_a_new_file(self):
         self.files.clear()
-        self.assertEqual(pc.create(self.client, "alice@example.com"), "Text Test.txt")
+        self.assertEqual(pc.create(self.client, FOLDER, "alice@example.com"), "Text Test.txt")
         self.assertEqual(self.files, {"Text Test.txt": b"created by alice@example.com\n"})
-        self.assertEqual(self.http.requests[-1], ("POST", "/pubapi/v1/fs-content/Shared/IT/Test%20Web%20App/Text%20Test.txt"))
+        self.assertEqual(self.http.requests[-1], ("POST", "/pubapi/v1/fs-content" + ENCODED + "/Text%20Test.txt"))
 
     def test_delete_sends_a_delete(self):
-        self.assertEqual(pc.delete(self.client), "Text Test.txt")
+        self.assertEqual(pc.delete(self.client, FOLDER), "Text Test.txt")
         self.assertEqual(self.files, {})
-        self.assertEqual(self.http.requests[-1], ("DELETE", "/pubapi/v1/fs/Shared/IT/Test%20Web%20App/Text%20Test.txt"))
+        self.assertEqual(self.http.requests[-1], ("DELETE", "/pubapi/v1/fs" + ENCODED + "/Text%20Test.txt"))
 
     def test_a_read_only_user_gets_a_403_that_surfaces_as_insufficient_permissions(self):
         self.http.level = "read"
         with self.assertRaises(exc.InsufficientPermissions):
-            pc.edit(self.client, "bob@example.com")
+            pc.edit(self.client, FOLDER, "bob@example.com")
         with self.assertRaises(exc.InsufficientPermissions):
-            pc.delete(self.client)
+            pc.delete(self.client, FOLDER)
         self.assertEqual(self.files, {"Text Test.txt": b"first line\n"})
 
     def test_a_user_with_no_access_is_denied_the_listing(self):
         self.http.level = "none"
-        self.assertEqual(pc.inspect(self.client)["folder_status"], "denied")
+        self.assertEqual(pc.inspect(self.client, FOLDER)["folder_status"], "denied")
         with self.assertRaises(exc.InsufficientPermissions):
-            pc.create(self.client, "carol@example.com")
+            pc.create(self.client, FOLDER, "carol@example.com")
 
     def test_the_whole_web_flow_over_the_real_library(self):
         # Alice may write, Bob may only read; both go through the real client and the real error mapping.

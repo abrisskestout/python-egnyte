@@ -18,7 +18,7 @@ from cryptography.fernet import Fernet  # noqa: E402
 import egnyte_oauth  # noqa: E402
 from egnyte_access import EgnyteAccess  # noqa: E402  (also puts the egnyte package on the path)
 from egnyte import exc  # noqa: E402
-from settings import Settings  # noqa: E402
+from settings import DEFAULT_PERMISSION_FOLDER, Settings  # noqa: E402
 from token_store import FileTokenStore  # noqa: E402
 
 TENANT = "11111111-1111-1111-1111-111111111111"
@@ -103,7 +103,7 @@ class FakeEgnyte:
         self.fail_with = None    # an exception every call raises, to test error pages
         self.clients = []
         # The permission-test folder: ONE shared set of files, and what each token may do there.
-        self.authz_folder = "/Shared/IT/Test Web App"
+        self.authz_folder = DEFAULT_PERMISSION_FOLDER
         self.authz_exists = True
         self.authz_files = {"Text Test.txt": b"first line\n"}                 # name -> bytes
         self.authz_levels = {"alice-access": "write", "bob-access": "read"}   # a token not listed has no access

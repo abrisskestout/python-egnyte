@@ -19,7 +19,7 @@ at the same folder can see different things.
 | `/egnyte/connect` → `/egnyte/callback` | The OAuth sign-in. The one-time `state` is tied to your session and works once. |
 | `/folders?path=/Shared` | Lists folders and files **as you**. Defaults to `/Private/<your Egnyte username>`. |
 | `/file?path=...` | Downloads a file (up to 25 MB) as an attachment. |
-| `/permissions` | **Permission test.** Three buttons on one fixed file, `Text Test` in `/Shared/IT/Test Web App`: *Edit file* adds the line `edited by <you>`, *Create file* creates it if it doesn't exist, *Delete file* removes it. Each runs as the signed-in user's own Egnyte account, so Egnyte allows or refuses it per person and the page shows the answer. |
+| `/permissions` | **Permission test.** Three buttons on one file, `Text Test`, in the folder set by `PERMISSION_TEST_FOLDER` (default `/Shared/Teams/IT/Infrastructure/Azure App Test`): *Edit file* adds the line `edited by <you>`, *Create file* creates it if it doesn't exist, *Delete file* removes it. Each runs as the signed-in user's own Egnyte account, so Egnyte allows or refuses it per person and the page shows the answer. |
 | `/healthz` | Plain `ok`, no sign-in. |
 
 ## 1. Build the package
@@ -120,7 +120,9 @@ passes the literal `@Microsoft.KeyVault(...)` text to the app. The app detects t
 with `EGNYTE_CLIENT_SECRET still holds an unresolved Key Vault reference`; see the log stream.
 
 Optional settings: `EGNYTE_SCOPE` (default `Egnyte.filesystem`), `EGNYTE_MAX_RPS` (default 2, shared by all
-users), `TOKEN_STORE_DIR` (default `/home/data/egnyte-tokens`, which is persistent on App Service).
+users), `TOKEN_STORE_DIR` (default `/home/data/egnyte-tokens`, which is persistent on App Service), and
+`PERMISSION_TEST_FOLDER` (the Egnyte folder for the Permission test page, default
+`/Shared/Teams/IT/Infrastructure/Azure App Test`).
 
 ## 6. Turn on Microsoft sign-in (required)
 
@@ -151,8 +153,12 @@ az webapp log tail -g $RG -n $APP
 
 ## The permission test
 
-Open **Permission test** on the home page (or `/permissions`). It works on the folder and file named at the top of
-[permission_check.py](permission_check.py); change `FOLDER`, `FILE_BASENAME` or `CREATE_AS` there to point elsewhere.
+Open **Permission test** on the home page (or `/permissions`). The folder is the **`PERMISSION_TEST_FOLDER` app setting**
+and defaults to `/Shared/Teams/IT/Infrastructure/Azure App Test`. Either slash style is accepted
+(`\Shared\Teams\IT\...` is read as `/Shared/Teams/IT/...`), it must be at least two levels deep, and it is checked when the
+app starts. To point it somewhere else, set the setting (or the `permissionTestFolder` parameter in
+[infra/main.bicep](../infra/main.bicep), which sets it) and restart. The file name is fixed in
+[permission_check.py](permission_check.py) (`FILE_BASENAME`, `CREATE_AS`).
 
 - **What it shows:** whether the folder and file exist *for you*, the file's current contents, who last modified it,
   and the Egnyte account everything runs as.

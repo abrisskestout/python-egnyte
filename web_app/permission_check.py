@@ -1,16 +1,16 @@
-"""The permission comparison: three actions on one fixed file, run as whoever is signed in.
+"""The permission comparison: three actions on one file, run as whoever is signed in.
 
 Every call here goes through the signed-in user's own Egnyte token, so Egnyte decides what that person may
 do. Two people pressing the same button can get different answers; that difference is what this section shows.
 
-The folder and file are fixed (constants below, never taken from a request), so there is nothing to inject.
+The folder comes from configuration (the PERMISSION_TEST_FOLDER app setting, see settings.py) and the file name from
+the constants below. Neither is ever taken from a request, so there is nothing to inject.
 """
 import io
 
 import egnyte_access  # noqa: F401  (puts the egnyte package on the import path; must come before the next line)
 from egnyte import exc
 
-FOLDER = "/Shared/IT/Test Web App"
 FILE_BASENAME = "Text Test"        # an existing "Text Test" or "Text Test.txt" (any capitals) is the file
 CREATE_AS = "Text Test.txt"        # what the Create button names a new file
 MAX_EDIT_BYTES = 1024 * 1024       # larger files are not read or edited here
@@ -22,8 +22,8 @@ class ActionRefused(Exception):
     The message is safe to show."""
 
 
-def file_path(name):
-    return f"{FOLDER}/{name}"
+def file_path(folder, name):
+    return f"{folder}/{name}"
 
 
 def name_of(item):
@@ -47,25 +47,25 @@ def read_all(client, path):
     return buffer.getvalue()
 
 
-def _find(client):
+def _find(client, folder):
     """(entry, name) of the file in the folder, or (None, None) if it isn't there. Raises ActionRefused if the
     folder itself can't be found; Egnyte's 'not allowed' passes through for the caller to report."""
     try:
-        listing = client.folder(FOLDER).list()
+        listing = client.folder(folder).list()
     except exc.NotFound:
-        raise ActionRefused(f"The folder {FOLDER} does not exist, or your Egnyte account can't see it.") from None
+        raise ActionRefused(f"The folder {folder} does not exist, or your Egnyte account can't see it.") from None
     if getattr(listing, "folders", None) is None:
-        raise ActionRefused(f"{FOLDER} is not a folder.")
+        raise ActionRefused(f"{folder} is not a folder.")
     return find_file(listing)
 
 
 # --------------------------------------------------------------------------- what is there now
 
-def inspect(client):
+def inspect(client, folder):
     """The current state as this user sees it. Never raises for 'not allowed' or 'not there': it reports them."""
-    state = {"folder": FOLDER, "folder_status": "ok", "file": None, "preview": None, "preview_note": None}
+    state = {"folder": folder, "folder_status": "ok", "file": None, "preview": None, "preview_note": None}
     try:
-        listing = client.folder(FOLDER).list()
+        listing = client.folder(folder).list()
     except exc.InsufficientPermissions:
         state["folder_status"] = "denied"
         return state
@@ -98,9 +98,9 @@ def inspect(client):
 
 # --------------------------------------------------------------------------- the three actions
 
-def edit(client, who):
+def edit(client, folder, who):
     """Add the line 'edited by <who>' to the end of the file. Returns the file's name."""
-    entry, name = _find(client)
+    entry, name = _find(client, folder)
     if entry is None:
         raise ActionRefused(f"{FILE_BASENAME} does not exist yet. Use Create file first.")
     if (vars(entry).get("size") or 0) > MAX_EDIT_BYTES:
@@ -113,18 +113,18 @@ def edit(client, who):
     return name
 
 
-def create(client, who):
+def create(client, folder, who):
     """Create the file if it doesn't exist. Returns the new file's name."""
-    entry, name = _find(client)
+    entry, name = _find(client, folder)
     if entry is not None:
         raise ActionRefused(f"{name} already exists, so nothing was changed.")
-    client.file(file_path(CREATE_AS)).upload(f"created by {who}\n".encode("utf-8"))
+    client.file(file_path(folder, CREATE_AS)).upload(f"created by {who}\n".encode("utf-8"))
     return CREATE_AS
 
 
-def delete(client):
+def delete(client, folder):
     """Delete the file. Returns the deleted file's name."""
-    entry, name = _find(client)
+    entry, name = _find(client, folder)
     if entry is None:
         raise ActionRefused(f"{FILE_BASENAME} does not exist, so there is nothing to delete.")
     client.file(entry.path).delete()

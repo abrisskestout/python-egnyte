@@ -243,16 +243,15 @@ def create_app(settings, *, store=None, access=None, oauth=egnyte_oauth, pending
         check_csrf()
         record = access.status(g.user)
         egnyte_user = record.egnyte_username if record else "unknown"
+        folder = settings.permission_folder
         try:
             name = access.run(g.user, action)
         except permission_check.ActionRefused as e:
             flash(str(e), "info")
         except exc.InsufficientPermissions:
-            flash(f"Egnyte refused: the Egnyte account {egnyte_user} is not allowed to {verb} in "
-                  f"{permission_check.FOLDER}.", "denied")
+            flash(f"Egnyte refused: the Egnyte account {egnyte_user} is not allowed to {verb} in {folder}.", "denied")
         except exc.NotFound:
-            flash(f"Egnyte could not find {permission_check.FOLDER}, or the account {egnyte_user} can't see it.",
-                  "denied")
+            flash(f"Egnyte could not find {folder}, or the account {egnyte_user} can't see it.", "denied")
         else:
             flash(done(name, egnyte_user), "success")
         return redirect(url_for("permissions"))
@@ -263,30 +262,32 @@ def create_app(settings, *, store=None, access=None, oauth=egnyte_oauth, pending
         record = access.status(g.user)
         if record is None:
             raise NotConnected("You have not connected an Egnyte account yet.")
-        state = access.run(g.user, permission_check.inspect)
+        folder = settings.permission_folder
+        state = access.run(g.user, lambda client: permission_check.inspect(client, folder))
         return render_template("permissions.html", state=state, who=g.user.name, egnyte_user=record.egnyte_username)
 
     @app.post("/permissions/edit")
     @require_user
     def permissions_edit():
-        who = g.user.name
+        who, folder = g.user.name, settings.permission_folder
         return permission_action(
-            "edit files", lambda client: permission_check.edit(client, who),
+            "edit files", lambda client: permission_check.edit(client, folder, who),
             lambda name, egnyte_user: f'Added the line "edited by {who}" to {name}, as the Egnyte account {egnyte_user}.')
 
     @app.post("/permissions/create")
     @require_user
     def permissions_create():
-        who = g.user.name
+        who, folder = g.user.name, settings.permission_folder
         return permission_action(
-            "create files", lambda client: permission_check.create(client, who),
+            "create files", lambda client: permission_check.create(client, folder, who),
             lambda name, egnyte_user: f"Created {name}, as the Egnyte account {egnyte_user}.")
 
     @app.post("/permissions/delete")
     @require_user
     def permissions_delete():
+        folder = settings.permission_folder
         return permission_action(
-            "delete files", permission_check.delete,
+            "delete files", lambda client: permission_check.delete(client, folder),
             lambda name, egnyte_user: f"Deleted {name}, as the Egnyte account {egnyte_user}.")
 
     if settings.allow_dev_user:

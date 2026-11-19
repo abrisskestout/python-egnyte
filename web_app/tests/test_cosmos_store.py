@@ -5,6 +5,7 @@ The fake raises the Azure SDK's real exception types, so the error handling test
 import hashlib
 import json
 import threading
+import time
 import unittest
 from types import SimpleNamespace
 from unittest import mock
@@ -105,13 +106,52 @@ class StoreTests(unittest.TestCase):
         self.store.delete(user_key)
         self.assertEqual(self.container.items, {})
 
-    def test_nothing_readable_is_stored(self):
+    def test_no_token_is_stored_in_the_clear(self):
         user_key = f"{TENANT}:{ALICE}"
         self.store.save(user_key, record(access="PLAINTEXT-ACCESS", refresh="PLAINTEXT-REFRESH"))
         everything = "\n".join(self.container.items.values()) + "".join(self.container.items)
-        for needle in ("PLAINTEXT-ACCESS", "PLAINTEXT-REFRESH", "alice.eg", ALICE, TENANT):
+        for needle in ("PLAINTEXT-ACCESS", "PLAINTEXT-REFRESH", ALICE, TENANT):   # nor who the user is in Entra
             self.assertNotIn(needle, everything)
-        self.assertEqual(set(self.container.documents()[0]), {"id", "v", "updated", "data"})
+
+    def test_each_piece_of_the_token_data_is_its_own_readable_field(self):
+        self.store.save("u", record())
+        document = self.container.documents()[0]
+        self.assertEqual(set(document), {"id", "v", "egnyte_username", "linked_at", "expires_at", "access_token",
+                                         "refresh_token", "updated"})
+        self.assertEqual(document["v"], 2)
+        self.assertEqual(document["egnyte_username"], "alice.eg")
+        self.assertEqual(document["linked_at"], "2023-11-14T22:13:20Z")         # 1_700_000_000
+        self.assertEqual(document["expires_at"], "2128-06-11T08:53:20Z")        # 5_000_000_000
+        self.assertRegex(document["updated"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
+
+    def test_only_the_two_tokens_are_encrypted_each_on_its_own(self):
+        self.store.save("u", record(access="the-access-token", refresh="the-refresh-token"))
+        document = self.container.documents()[0]
+        fernet = Fernet(KEY)
+        self.assertEqual(fernet.decrypt(document["access_token"].encode()), b"the-access-token")
+        self.assertEqual(fernet.decrypt(document["refresh_token"].encode()), b"the-refresh-token")
+        for readable in ("egnyte_username", "linked_at", "expires_at", "updated"):
+            with self.assertRaises(Exception):
+                fernet.decrypt(document[readable].encode())        # these are not ciphertext
+
+    def test_a_missing_refresh_token_and_expiry_are_stored_as_null_and_read_back(self):
+        self.store.save("u", TokenRecord("only-access", None, None, "alice.eg", 1_700_000_000.0))
+        document = self.container.documents()[0]
+        self.assertIsNone(document["refresh_token"])
+        self.assertIsNone(document["expires_at"])
+        self.assertEqual(self.store.load("u"), TokenRecord("only-access", None, None, "alice.eg", 1_700_000_000.0))
+
+    def test_times_are_kept_to_the_second(self):
+        self.store.save("u", TokenRecord("a", "r", 5_000_000_000.75, "alice.eg", 1_700_000_000.25))
+        loaded = self.store.load("u")
+        self.assertEqual((loaded.expires_at, loaded.linked_at), (5_000_000_000.0, 1_700_000_000.0))
+
+    def test_a_real_clock_value_round_trips_to_within_a_second(self):
+        now = time.time()
+        self.store.save("u", TokenRecord("a", "r", now + 2_592_000, "alice.eg", now))
+        loaded = self.store.load("u")
+        self.assertLess(abs(loaded.linked_at - now), 1)
+        self.assertLess(abs(loaded.expires_at - (now + 2_592_000)), 1)
 
     def test_saving_again_replaces_the_one_document(self):
         self.store.save("u", record(access="one"))
@@ -137,20 +177,44 @@ class StoreTests(unittest.TestCase):
         rotated.save("u", record(access="new"))
         self.assertEqual(CosmosTokenStore(self.container, [new_key]).load("u").access_token, "new")
 
-    def test_damaged_encrypted_data_reads_as_not_connected_and_is_logged(self):
+    def stored_document(self, **changes):
+        """A good document for "u" with some fields replaced (a field set to KeyError is removed)."""
+        self.store.save("u", record())
         item_id = user_id("u")
-        for data in ("garbage", "é"):
-            with self.subTest(data=data):
-                self.container.items[item_id] = json.dumps({"id": item_id, "v": 1, "data": data})
-                with self.assertLogs("egnyte.tokenstore", "WARNING"):
-                    self.assertIsNone(self.store.load("u"))
+        document = json.loads(self.container.items[item_id])
+        for name, value in changes.items():
+            if value is KeyError:
+                del document[name]
+            else:
+                document[name] = value
+        self.container.items[item_id] = json.dumps(document)
+
+    def test_damaged_fields_read_as_not_connected_and_are_logged(self):
+        damage = {"access_token": ("garbage", "é", 5, None, KeyError),
+                  "refresh_token": ("garbage", "é", 5),
+                  "egnyte_username": (5, None, KeyError),
+                  "linked_at": ("yesterday", "2023-11-14", 5, None, KeyError),
+                  "expires_at": ("tomorrow", "2128-06-11 08:53:20", 5)}
+        for field, bad_values in damage.items():
+            for value in bad_values:
+                with self.subTest(field=field, value=value):
+                    self.stored_document(**{field: value})
+                    with self.assertLogs("egnyte.tokenstore", "WARNING"):
+                        self.assertIsNone(self.store.load("u"))
+
+    def test_a_token_swapped_in_from_another_key_reads_as_not_connected(self):
+        self.stored_document(access_token=Fernet(Fernet.generate_key()).encrypt(b"stolen").decode())
+        with self.assertLogs("egnyte.tokenstore", "WARNING"):
+            self.assertIsNone(self.store.load("u"))
 
     def test_documents_of_another_shape_read_as_not_connected(self):
         item_id = user_id("u")
-        for document in ({"id": item_id, "v": 2, "data": "x"}, {"id": item_id, "v": 1, "data": 5}, {"id": item_id}):
+        for document in ({"id": item_id, "v": 1, "data": "x"}, {"id": item_id, "v": 3}, {"id": item_id}):
             with self.subTest(document=document):
                 self.container.items[item_id] = json.dumps(document)
                 self.assertIsNone(self.store.load("u"))
+        self.stored_document(v=1)         # the old layout's version number is not accepted for the new fields
+        self.assertIsNone(self.store.load("u"))
 
     def test_malformed_keys_and_no_keys_are_refused(self):
         with self.assertRaises(ValueError):
@@ -373,13 +437,14 @@ class SiteOverCosmosTests(unittest.TestCase):
         self.alice = as_user(self.stack.app.test_client(), ALICE, "alice@example.com")
         self.bob = as_user(self.stack.app.test_client(), BOB, "bob@example.com")
 
-    def test_connecting_stores_an_encrypted_document_per_person(self):
+    def test_connecting_stores_a_document_per_person_with_the_tokens_encrypted(self):
         self.assertEqual(connect_user(self, self.alice, "code-alice").status_code, 302)
         self.assertEqual(connect_user(self, self.bob, "code-bob").status_code, 302)
         self.assertEqual(len(self.container.items), 2)
         everything = "\n".join(self.container.items.values())
-        for needle in ("alice-access", "alice-refresh", "bob-access", "bob-refresh", "alice.eg", "bob.eg"):
+        for needle in ("alice-access", "alice-refresh", "bob-access", "bob-refresh"):
             self.assertNotIn(needle, everything)
+        self.assertEqual(sorted(d["egnyte_username"] for d in self.container.documents()), ["alice.eg", "bob.eg"])
         self.assertIn("alice.eg", page_text(self.alice.get("/")))
         self.assertIn("bob.eg", page_text(self.bob.get("/")))
 

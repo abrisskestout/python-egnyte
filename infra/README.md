@@ -119,7 +119,8 @@ finished replicating through Entra yet: run the same command again. If Azure ans
 Tokens that people stored before this change (in files on the web app) are not copied across: each person connects to
 Egnyte once more.
 
-**Optional: look at the data.** The app's tokens are encrypted, so you will only see ids and timestamps, but to open
+**Optional: look at the data.** Each document shows the Egnyte user name and the times in plain text; the access and
+refresh tokens are encrypted, so they read as `gAAAA...` (see the field table in `web_app/README.md`). To open
 the container in the portal's Data Explorer or from your PC you need a data role of your own (Owner is not enough):
 
 ```powershell

@@ -3,9 +3,11 @@
 CosmosTokenStore is the store the deployed site uses: one document per user in an Azure Cosmos DB for NoSQL
 container. The app signs in to Cosmos DB with its managed identity (Microsoft Entra ID); there is no account key
 and no connection string anywhere, and the account has key-based access switched off. The document id is a
-hash of the user key, so nothing a user controls ever becomes a document id, and the tokens inside are
-encrypted by this app (Fernet: AES-128-CBC + HMAC-SHA256) before they are sent, with keys from Key Vault, so a
-person who can read the database still can't read a token.
+hash of the user key, so nothing a user controls ever becomes a document id. Each piece of the token data is its
+own field, so the document reads at a glance in Data Explorer: the Egnyte user name and the times are plain,
+and only the two secrets, access_token and refresh_token, are encrypted by this app (Fernet: AES-128-CBC +
+HMAC-SHA256, one ciphertext per field) before they are sent, with keys from Key Vault, so a person who can read
+the database still can't read a token.
 
 FileTokenStore keeps one encrypted file per user in a directory. It is only for running on your own PC without a
 Cosmos DB account (the site refuses to start on App Service without one).
@@ -15,6 +17,7 @@ run a single gunicorn worker on a single instance (the README's startup command 
 several instances share the tokens, but two instances could still refresh the same user's token at the same
 moment; fixing that needs a lock or an ETag check around refresh. PendingStates is in memory for the same reason.
 """
+import calendar
 import hashlib
 import json
 import logging
@@ -30,9 +33,10 @@ from cryptography.fernet import Fernet, InvalidToken, MultiFernet
 
 log = logging.getLogger("egnyte.tokenstore")
 
-COSMOS_DOCUMENT_VERSION = 1
+COSMOS_DOCUMENT_VERSION = 2             # 1 was a single encrypted "data" field; it was never deployed
 COSMOS_OWNER_RESOURCE_MISSING = 1003    # sub-status of a 404 that means the database or container doesn't exist
 LOG_DETAIL_LIMIT = 500
+TIME_FORMAT = "%Y-%m-%dT%H:%M:%SZ"      # UTC, to the second: how times read in the Cosmos DB document
 
 
 class TokenStoreError(Exception):
@@ -52,6 +56,8 @@ class TokenRecord:
         record = cls(**{name: data[name] for name in cls.__dataclass_fields__})
         if not isinstance(record.access_token, str) or not record.access_token:
             raise ValueError("bad access token")
+        if not isinstance(record.egnyte_username, str) or not isinstance(record.linked_at, (int, float)):
+            raise ValueError("bad record")
         return record
 
 
@@ -85,8 +91,36 @@ class _SealedStore:
         try:
             return TokenRecord.from_dict(json.loads(self._fernet.decrypt(blob).decode("utf-8")))
         except (InvalidToken, ValueError, KeyError, TypeError):
-            log.warning("A stored token could not be read (was TOKEN_ENCRYPTION_KEYS changed?); ignoring it.")
-            return None
+            return self._unreadable()
+
+    def _seal_text(self, text):
+        """One secret as an encrypted string that is safe to keep in a JSON document."""
+        return self._fernet.encrypt(text.encode("utf-8")).decode("ascii")
+
+    def _unseal_text(self, token):
+        """The secret in _seal_text's output. Raises InvalidToken, TypeError or ValueError if it can't be read."""
+        if not isinstance(token, str):
+            raise TypeError("an encrypted field is not text")
+        return self._fernet.decrypt(token.encode("ascii", "replace")).decode("utf-8")
+
+    @staticmethod
+    def _unreadable():
+        log.warning("A stored token could not be read (was TOKEN_ENCRYPTION_KEYS changed?); ignoring it.")
+        return None
+
+
+def _time_text(epoch):
+    """Seconds since the epoch as readable UTC text ('2026-12-19T14:02:11Z'); None stays None."""
+    return None if epoch is None else time.strftime(TIME_FORMAT, time.gmtime(epoch))
+
+
+def _epoch(text):
+    """The reverse of _time_text. None stays None; anything that isn't exactly that format is a ValueError."""
+    if text is None:
+        return None
+    if not isinstance(text, str):
+        raise TypeError("a time is not text")
+    return float(calendar.timegm(time.strptime(text, TIME_FORMAT)))
 
 
 def _status(error):
@@ -141,7 +175,20 @@ def _store_error(what, error):
 
 
 class CosmosTokenStore(_SealedStore):
-    """One Cosmos DB document per user: {id: hash of the user key, v, data: encrypted record, updated}.
+    """One Cosmos DB document per user, one field per piece of the token data:
+
+        id               hash of the user key (also the partition key)
+        v                document layout version
+        egnyte_username  plain text
+        linked_at        plain, UTC ('2026-11-19T14:02:11Z')
+        expires_at       plain, UTC; null when Egnyte didn't say
+        access_token     encrypted
+        refresh_token    encrypted; null when there is none
+        updated          plain, UTC: when this document was last written
+
+    Times are kept to the second. Only the two tokens are secret, so only they are encrypted; the plain fields can
+    be edited by anyone with write access to the database, which can at worst make the page show a wrong name or
+    make a token be refreshed early or late (Egnyte still decides whether a token works).
 
     `container` is a Cosmos DB container (ContainerProxy), or a function that returns one when first called
     (see CosmosContainerSource). Only point reads, writes and deletes are used, by id, so the account needs no
@@ -164,9 +211,13 @@ class CosmosTokenStore(_SealedStore):
             raise _store_error(what, e) from None
 
     def save(self, user_key, record):
-        item_id = user_id(user_key)
-        document = {"id": item_id, "v": COSMOS_DOCUMENT_VERSION, "updated": time.time(),
-                    "data": self._seal(record).decode("ascii")}
+        document = {"id": user_id(user_key), "v": COSMOS_DOCUMENT_VERSION,
+                    "egnyte_username": record.egnyte_username,
+                    "linked_at": _time_text(record.linked_at),
+                    "expires_at": _time_text(record.expires_at),
+                    "access_token": self._seal_text(record.access_token),
+                    "refresh_token": None if record.refresh_token is None else self._seal_text(record.refresh_token),
+                    "updated": _time_text(time.time())}
         self._call("save a token", lambda container: container.upsert_item(document))
 
     def load(self, user_key):
@@ -174,10 +225,18 @@ class CosmosTokenStore(_SealedStore):
         item_id = user_id(user_key)
         document = self._call("read a token", lambda container: container.read_item(item=item_id, partition_key=item_id),
                               missing_ok=True)
-        if not isinstance(document, dict) or document.get("v") != COSMOS_DOCUMENT_VERSION \
-                or not isinstance(document.get("data"), str):
+        if not isinstance(document, dict) or document.get("v") != COSMOS_DOCUMENT_VERSION:
             return None
-        return self._unseal(document["data"].encode("ascii", "replace"))
+        try:
+            refresh = document.get("refresh_token")
+            return TokenRecord.from_dict({
+                "access_token": self._unseal_text(document["access_token"]),
+                "refresh_token": None if refresh is None else self._unseal_text(refresh),
+                "expires_at": _epoch(document.get("expires_at")),
+                "egnyte_username": document["egnyte_username"],
+                "linked_at": _epoch(document["linked_at"])})
+        except (InvalidToken, ValueError, KeyError, TypeError):
+            return self._unreadable()
 
     def delete(self, user_key):
         item_id = user_id(user_key)

@@ -55,4 +55,31 @@
   </div>
   <p class="muted">Each edit becomes a new version in Egnyte, so you can see who did what in its version history.</p>
 </section>
+
+{% if state.folder_status == "ok" %}
+<section>
+  <h2>PDF text layer</h2>
+  {% if not state.pdfs %}
+    <p>There is no PDF in the folder. Upload one to Egnyte and reload this page.</p>
+  {% else %}
+    <p class="muted">
+      Downloads the PDF as your Egnyte account and shows the text already inside it: no OCR. A scanned PDF has none,
+      and the page will say so.
+    </p>
+    <div class="actions">
+      {% for pdf in state.pdfs %}
+        <form method="get" action="{{ url_for('permissions_pdf') }}">
+          <input type="hidden" name="name" value="{{ pdf.name }}">
+          <button type="submit">Show text layer</button>
+          <strong>{{ pdf.name }}</strong>
+          {% if pdf.size is not none %}<span class="muted">({{ pdf.size }} bytes)</span>{% endif %}
+        </form>
+      {% endfor %}
+    </div>
+    {% if state.pdfs_hidden %}
+      <p class="muted">{{ state.pdfs_hidden }} more PDF{{ "" if state.pdfs_hidden == 1 else "s" }} in the folder not listed.</p>
+    {% endif %}
+  {% endif %}
+</section>
+{% endif %}
 {% endblock %}

@@ -25,7 +25,7 @@ class PackageTests(unittest.TestCase):
         for name in ("app.py", "wsgi.py", "settings.py", "identity.py", "egnyte_oauth.py", "token_store.py",
                      "egnyte_access.py", "permission_check.py", "requirements.txt", "templates/base.html",
                      "templates/index.html", "templates/folders.html", "templates/error.html",
-                     "templates/permissions.html", "static/app.css", ".deployment",
+                     "templates/permissions.html", "templates/permissions_pdf.html", "static/app.css", ".deployment",
                      "egnyte/__init__.py", "egnyte/client.py", "egnyte/base.py", "egnyte/resources.py", "LICENSE.txt"):
             self.assertIn(name, self.names)
 
@@ -49,7 +49,8 @@ class PackageTests(unittest.TestCase):
             lines = [line.split(">")[0].strip().lower() for line in archive.read("requirements.txt").decode().splitlines()
                      if line.strip()]
         self.assertNotIn("egnyte", lines)
-        for needed in ("flask", "gunicorn", "requests", "cryptography", "azure-identity", "azure-keyvault-secrets"):
+        for needed in ("flask", "gunicorn", "requests", "cryptography", "azure-identity", "azure-keyvault-secrets",
+                       "azure-cosmos", "pypdf"):
             self.assertIn(needed, lines)
         for test_only in ("nose", "coverage"):
             self.assertNotIn(test_only, lines)

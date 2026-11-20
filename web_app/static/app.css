@@ -17,3 +17,4 @@ a { color: var(--accent); }
 .actions form { margin: .6rem 0; }
 .actions .muted { margin-left: .5rem; }
 .preview { padding: .6rem .9rem; border: 1px solid #8884; border-radius: 3px; white-space: pre-wrap; overflow-x: auto; }
+.pdf-text { max-height: 70vh; overflow-y: auto; }

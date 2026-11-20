@@ -300,6 +300,28 @@ def create_app(settings, *, store=None, access=None, oauth=egnyte_oauth, pending
             "delete files", lambda client: permission_check.delete(client, folder),
             lambda name, egnyte_user: f"Deleted {name}, as the Egnyte account {egnyte_user}.")
 
+    @app.get("/permissions/pdf")
+    @require_user
+    def permissions_pdf():
+        """Show the text layer of one PDF in the test folder. It only reads, so it is a GET like /folders and /file;
+        the name is checked against the folder's live listing (see permission_check.pdf_text)."""
+        record = access.status(g.user)
+        if record is None:
+            raise NotConnected("You have not connected an Egnyte account yet.")
+        folder, name = settings.permission_folder, request.args.get("name", "")
+        try:
+            result = access.run(g.user, lambda client: permission_check.pdf_text(client, folder, name))
+        except permission_check.ActionRefused as e:
+            flash(str(e), "info")
+        except exc.InsufficientPermissions:
+            flash(f"Egnyte refused: the Egnyte account {record.egnyte_username} is not allowed to read that PDF "
+                  f"in {folder}.", "denied")
+        except exc.NotFound:
+            flash(f"Egnyte could not find {folder}, or the account {record.egnyte_username} can't see it.", "denied")
+        else:
+            return render_template("permissions_pdf.html", pdf=result, folder=folder, egnyte_user=record.egnyte_username)
+        return redirect(url_for("permissions"))
+
     if settings.allow_dev_user:
         @app.get("/dev/as/<name>")
         def dev_login(name):

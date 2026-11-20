@@ -22,7 +22,7 @@ at the same folder can see different things.
 | `/egnyte/connect` → `/egnyte/callback` | The OAuth sign-in. The one-time `state` is tied to your session and works once. |
 | `/folders?path=/Shared` | Lists folders and files **as you**. Defaults to `/Private/<your Egnyte username>`. |
 | `/file?path=...` | Downloads a file (up to 25 MB) as an attachment. |
-| `/permissions` | **Permission test.** Three buttons on one file, `Text Test`, in the folder set by `PERMISSION_TEST_FOLDER` (default `/Shared/Teams/IT/Infrastructure/Azure App Test`): *Edit file* adds the line `edited by <you>`, *Create file* creates it if it doesn't exist, *Delete file* removes it. Each runs as the signed-in user's own Egnyte account, so Egnyte allows or refuses it per person and the page shows the answer. |
+| `/permissions` | **Permission test.** Three buttons on one file, `Text Test`, in the folder set by `PERMISSION_TEST_FOLDER` (default `/Shared/Teams/IT/Infrastructure/Azure App Test`): *Edit file* adds the line `edited by <you>`, *Create file* creates it if it doesn't exist, *Delete file* removes it. Each runs as the signed-in user's own Egnyte account, so Egnyte allows or refuses it per person and the page shows the answer. Below them, each PDF in that folder has a **Show text layer** button (`/permissions/pdf`) that shows the text inside the PDF, with no OCR. |
 | `/healthz` | Plain `ok`, no sign-in. |
 
 ## 1. Build the package
@@ -190,6 +190,33 @@ app starts. To point it somewhere else, set the setting (or the `permissionTestF
 - It needs no new Egnyte permission: `Egnyte.filesystem`, which everyone already granted when connecting, covers
   reading, writing and deleting files.
 - It is a read-then-write, so two people pressing *Edit* at the same instant can lose one line. Fine for a test.
+
+### Show text layer (PDFs)
+
+Under the three buttons the page lists every PDF in the same folder (any capitals, up to 25), each with a **Show text layer**
+button. It downloads that PDF **as your Egnyte account** and shows the text already inside the file, page by page
+(`--- Page 1 ---`, ...). **No OCR is run.** It is a way to check whether a PDF can be read without OCR, and to compare
+what different people may read.
+
+- **A scanned PDF has no text layer.** The page then says "No text layer was found. This PDF is probably a scan", and
+  for a mixed document how many pages have none. Those pages would need OCR (for example Azure AI Document Intelligence).
+- **Limits** (in [permission_check.py](permission_check.py)): PDFs over 10 MB are not downloaded, only the first 50
+  pages are read, and the text is cut off after 100,000 characters; the page says when any of that happened. The site
+  runs one worker, so a very heavy PDF holds up other users for the seconds it takes to parse.
+- **Password-protected PDFs** are refused with a message. A PDF that only restricts editing (an owner password) opens
+  and is read normally. A damaged file gets a notice, not an error page; the log records only the kind of error.
+- **It only reads.** Nothing in Egnyte is changed. It is a plain `GET /permissions/pdf?name=<file name>`, so there is
+  no CSRF token. The name is only ever compared with the names in the folder's current listing and the file that is
+  downloaded is the path Egnyte listed, so a made-up name (`../x.pdf`, a path, a non-PDF such as `Text Test.txt`) is
+  refused without any download. Text from the file is escaped on the page.
+- **A refusal is shown:** if Egnyte won't let your account read the file you see
+  `Egnyte refused: the Egnyte account <name> is not allowed to read that PDF in <folder>`.
+- Text extraction is [pypdf](https://pypi.org/project/pypdf/) (added to `requirements.txt`), pure Python, so nothing
+  extra is installed on App Service. Text comes out in the order pypdf reads the page, which for multi-column pages or
+  tables can differ from how it looks.
+- Tested with generated PDFs (text, blank, password-protected, owner-password, damaged, oversized) and over the real
+  `egnyte` library with only HTTP faked. **Not yet run against real Egnyte or a real-world PDF**: how well pypdf reads
+  your particular PDFs is the thing to look at first.
 
 ## 8. Test with more than one user
 
